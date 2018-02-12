@@ -1,4 +1,4 @@
-// #![feature(advanced_slice_patterns, slice_patterns)]
+#![feature(advanced_slice_patterns, slice_patterns)]
 
 // extern crate ggez;
 use std::error::Error;
@@ -60,6 +60,10 @@ impl Display {
 
         display
     }
+
+    fn clear(&mut self) {
+        self.memory = [false; 2048]
+    }
 }
 
 static FONTSET: [u8; 80] = [
@@ -100,7 +104,9 @@ pub struct Cpu {
     // delay timer
     pub dt: u8,
     // sound timer
-    pub st: u8
+    pub st: u8,
+    // overflow flag
+    pub vf: u8
 }
 
 
@@ -120,6 +126,7 @@ impl Cpu {
             sp: 0,
             dt: 0,
             st: 0,
+            vf: 0,
             keypad: Keypad::new(),
             display: Display::new()
         };
@@ -160,16 +167,205 @@ impl Cpu {
       // let separate_bytes: Vec<char> = opcode_string.chars().collect(); //.map(|c| c as u8).collect();
       let separate_bytes = self.split_u4(opcode);
 
-      // println!("{:?}", separate_bytes);
       print_binary(&separate_bytes);
 
-      match separate_bytes {
-        &['6', _, _, _] => println!("LD Vx, byte"),
+      let kk = opcode & 0x00ff;
+      let nnn = opcode & 0x0fff;
+
+      // TODO: move high/low byte trimming here, instead of passing opcode
+
+      match separate_bytes[..] {
+        [0, 0, 0xEu8, 0] => self.cls(),
+        [0, 0, 0xEu8, 0xEu8] => self.ret(),
+        [0, _, _, _] => self.sys(),
+        [1, _, _, _] => self.jp(nnn),
+        [2, _, _, _] => self.call(nnn),
+        [3, x, _, _] => self.se(x, kk),
+        [4, x, _, _] => self.sen(x, kk),
+        [5, x, y, 0] => self.sexy(x, y),
+        [6, x, _, _] => self.ldxkk(x, kk),
+        [7, x, _, _] => self.addxkk(x, kk),
+        [8, x, y, 0] => self.ldxy(x, y),
+        [8, x, y, 1] => self.or(x, y),
+        [8, x, y, 2] => self.and(x, y),
+        [8, x, y, 3] => self.xor(x, y),
+        [8, x, y, 4] => self.add(x, y),
+        [8, x, y, 5] => self.sub(x, y),
+        [8, x, y, 6] => self.shr(x, y),
         _ => println!("Something random")
       }
     }
 
-    fn 
+    //
+    // Opcodes
+    //
+
+    // 0nnn - SYS addr
+    // Jump to a machine code routine at nnn.
+    // This instruction is only used on the old computers on which Chip-8 was originally
+    // implemented. It is ignored by modern interpreters.
+    fn sys(&mut self) {
+        self.pc += 1;
+    }
+
+    // 00E0 - CLS
+    // Clear the display.
+    fn cls(&mut self) {
+        self.display.clear();
+        self.pc += 1;
+    }
+
+    // 00EE - RET
+    // Return from a subroutine.
+    // The interpreter sets the program counter to the address at the top of the stack, then
+    // subtracts 1 from the stack pointer.
+    fn ret(&mut self) {
+        self.pc = *self.stack.get(self.sp as usize).unwrap();
+        if self.sp > 0 {
+            self.sp -= 1;
+        }
+    }
+
+    // 1nnn - JP addr
+    // Jump to location nnn.
+    // The interpreter sets the program counter to nnn.
+    fn jp(&mut self, nnn: u16) {
+        self.pc = nnn;
+    }
+
+    // 2nnn - CALL addr
+    // Call subroutine at nnn.
+    // The interpreter increments the stack pointer, then puts the current PC on the top of the 
+    // stack. The PC is then set to nnn.
+    fn call(&mut self, nnn: u16) {
+        self.sp += 1;
+        self.stack[self.sp as usize] = self.pc;
+        self.pc = nnn;
+    }
+
+    // 3xkk - SE Vx, byte
+    // Skip next instruction if Vx = kk.
+    // The interpreter compares register Vx to kk, and if they are equal, increments the program 
+    // counter by 2.
+    fn se(&mut self, x: u8, kk: u16) {
+        if self.v[x as usize] as u16 == kk  {
+            self.pc += 2;
+        }
+    }
+
+    // 4xkk - SNE Vx, byte
+    // Skip next instruction if Vx != kk.
+    // The interpreter compares register Vx to kk, and if they are not equal, increments the 
+    // program counter by 2.
+    fn sen(&mut self, x: u8, kk: u16) {
+        if self.v[x as usize] as u16 != kk  {
+            self.pc += 2;
+        }
+    }
+
+    // 5xy0 - SE Vx, Vy
+    // Skip next instruction if Vx = Vy.
+    // The interpreter compares register Vx to register Vy, and if they are equal, increments the 
+    // program counter by 2.
+    fn sexy(&mut self, x: u8, y: u8) {
+        if self.v[x as usize] == self.v[y as usize] {
+            self.pc += 2;
+        }
+    }
+
+    // 6xkk - LD Vx, byte
+    // Set Vx = kk.
+    // The interpreter puts the value kk into register Vx.
+    fn ldxkk(&mut self, x: u8, kk: u16) {
+        self.v[x as usize] = kk as u8;
+        self.pc += 1;
+    }
+
+    // 7xkk - ADD Vx, byte
+    // Set Vx = Vx + kk.
+    // Adds the value kk to the value of register Vx, then stores the result in Vx.
+    fn addxkk(&mut self, x: u8, kk: u16) {
+        self.v[x as usize] += kk as u8;
+        self.pc += 1;
+    }
+
+    // 8xy0 - LD Vx, Vy
+    // Set Vx = Vy.
+    // Stores the value of register Vy in register Vx.
+    fn ldxy(&mut self, x: u8, y: u8) {
+        self.v[x as usize] = self.v[y as usize];
+        self.pc += 1;
+    }
+
+    // 8xy1 - OR Vx, Vy
+    // Set Vx = Vx OR Vy.
+    // Performs a bitwise OR on the values of Vx and Vy, then stores the result in Vx.
+    fn or(&mut self, x: u8, y: u8) {
+        let res: u8 = self.v[x as usize] | self.v[y as usize];
+        self.v[x as usize] = res;
+        self.pc += 1;
+    }
+
+    // 8xy2 - AND Vx, Vy
+    // Set Vx = Vx AND Vy.
+    // Performs a bitwise AND on the values of Vx and Vy, then stores the result in Vx.
+    fn and(&mut self, x: u8, y: u8) {
+        let res: u8 = self.v[x as usize] & self.v[y as usize];
+        self.v[x as usize] = res;
+        self.pc += 1;
+    }
+
+    // 8xy3 - XOR Vx, Vy
+    // Set Vx = Vx XOR Vy.
+    // Performs a bitwise exclusive OR on the values of Vx and Vy, then stores the result in Vx. 
+    fn xor(&mut self, x: u8, y: u8) {
+        let res: u8 = self.v[x as usize] ^ self.v[y as usize];
+        self.v[x as usize] = res;
+        self.pc += 1;
+    }
+
+    // 8xy4 - ADD Vx, Vy
+    // Set Vx = Vx + Vy, set VF = carry.
+    // The values of Vx and Vy are added together. If the result is greater than 8 bits (i.e., 
+    // > 255,) VF is set to 1, otherwise 0. Only the lowest 8 bits of the result are kept, and 
+    // stored in Vx.
+    fn add(&mut self, x: u8, y: u8) {
+        let vx = self.v[x as usize];
+        let res: u8 = vx.wrapping_add(self.v[y as usize]);
+        let carry: u8 = if res >= vx { 0 } else { 1 };
+
+        self.v[x as usize] = res;
+        self.vf = carry;
+        self.pc += 1;
+    }
+
+    // 8xy5 - SUB Vx, Vy
+    // Set Vx = Vx - Vy, set VF = NOT borrow.
+    // If Vx > Vy, then VF is set to 1, otherwise 0. Then Vy is subtracted from Vx, and the results 
+    // stored in Vx.
+    fn sub(&mut self, x: u8, y: u8) {
+        let vx = self.v[x as usize];
+        let vy = self.v[y as usize];
+        let res: u8 = vx.wrapping_sub(vy);
+        let carry: u8 = if vx > vy { 1 } else { 0 };
+
+        self.v[x as usize] = res;
+        self.vf = carry;
+        self.pc += 1;
+    }
+
+    // 8xy6 - SHR Vx {, Vy}
+    // Set Vx = Vx SHR 1.
+    // If the least-significant bit of Vx is 1, then VF is set to 1, otherwise 0.  Then Vx is 
+    // divided by 2.
+    fn shr(&mut self, x: u8, _y: u8) {
+        let vx = self.v[x as usize];
+        let carry: u8 = vx >> 3;
+
+        self.v[x as usize] = vx >> 1;
+        self.vf = carry;
+        self.pc += 1;
+    }
 }
 
 
