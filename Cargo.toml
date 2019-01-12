@@ -6,6 +6,7 @@ build = "src/main.rs"
 
 [dependencies]
 itertools-num = "0.1.1"
+rand = "0.4"
 
 [features]
 default = []
