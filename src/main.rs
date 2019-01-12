@@ -1,4 +1,11 @@
-#![feature(advanced_slice_patterns, slice_patterns)]
+#![feature(advanced_slice_patterns, slice_patterns, rustc_private)]
+
+extern crate rand;
+// use rand::Rng;
+
+// extern crate rand;
+use rand::Rng;
+use rand::distributions::{IndependentSample, Range};
 
 // extern crate ggez;
 use std::error::Error;
@@ -163,8 +170,6 @@ impl Cpu {
     fn process_opcode(&mut self, opcode: u16) {
       println!("processing opcode, {:x}", opcode);
 
-      // let opcode_string: String = format!("{:x}", opcode);
-      // let separate_bytes: Vec<char> = opcode_string.chars().collect(); //.map(|c| c as u8).collect();
       let separate_bytes = self.split_u4(opcode);
 
       print_binary(&separate_bytes);
@@ -172,11 +177,9 @@ impl Cpu {
       let kk = opcode & 0x00ff;
       let nnn = opcode & 0x0fff;
 
-      // TODO: move high/low byte trimming here, instead of passing opcode
-
       match separate_bytes[..] {
-        [0, 0, 0xEu8, 0] => self.cls(),
-        [0, 0, 0xEu8, 0xEu8] => self.ret(),
+        [0, 0, 0xE, 0] => self.cls(),
+        [0, 0, 0xE, 0xE] => self.ret(),
         [0, _, _, _] => self.sys(),
         [1, _, _, _] => self.jp(nnn),
         [2, _, _, _] => self.call(nnn),
@@ -192,6 +195,12 @@ impl Cpu {
         [8, x, y, 4] => self.add(x, y),
         [8, x, y, 5] => self.sub(x, y),
         [8, x, y, 6] => self.shr(x, y),
+        [8, x, y, 7] => self.subn(x, y),
+        [8, x, y, 0xE] => self.shl(x, y),
+        [9, x, y, 0] => self.sne(x, y),
+        [0xA, _, _, _] => self.ldi(nnn),
+        [0xB, _, _, _] => self.jpv0(nnn),
+        [0xC, x, _, _] => self.rnd(x, kk),
         _ => println!("Something random")
       }
     }
@@ -250,6 +259,8 @@ impl Cpu {
     fn se(&mut self, x: u8, kk: u16) {
         if self.v[x as usize] as u16 == kk  {
             self.pc += 2;
+        } else {
+            self.pc += 1;
         }
     }
 
@@ -260,6 +271,8 @@ impl Cpu {
     fn sen(&mut self, x: u8, kk: u16) {
         if self.v[x as usize] as u16 != kk  {
             self.pc += 2;
+        } else {
+            self.pc += 1;
         }
     }
 
@@ -270,6 +283,8 @@ impl Cpu {
     fn sexy(&mut self, x: u8, y: u8) {
         if self.v[x as usize] == self.v[y as usize] {
             self.pc += 2;
+        } else {
+            self.pc += 1;
         }
     }
 
@@ -364,6 +379,74 @@ impl Cpu {
 
         self.v[x as usize] = vx >> 1;
         self.vf = carry;
+        self.pc += 1;
+    }
+
+    // 8xy7 - SUBN Vx, Vy
+    // Set Vx = Vy - Vx, set VF = NOT borrow.
+    // If Vy > Vx, then VF is set to 1, otherwise 0. Then Vx is subtracted from Vy, and the results 
+    // stored in Vx.
+    fn subn(&mut self, x: u8, y: u8) {
+        let vx = self.v[x as usize];
+        let vy = self.v[y as usize];
+        let res: u8 = vy.wrapping_sub(vx);
+        let carry: u8 = if vy > vx { 1 } else { 0 };
+
+        self.v[x as usize] = res;
+        self.vf = carry;
+        self.pc += 1;
+    }
+
+    // 8xyE - SHL Vx {, Vy}
+    // Set Vx = Vx SHL 1.
+    // If the most-significant bit of Vx is 1, then VF is set to 1, otherwise to 
+    // 0. Then Vx is multiplied by 2.
+    fn shl(&mut self, x: u8, _y: u8) {
+        let vx = self.v[x as usize];
+        let carry: u8 = vx >> 3;
+
+        self.v[x as usize] = vx << 1;
+        self.vf = carry;
+        self.pc += 1;
+    }
+
+    // 9xy0 - SNE Vx, Vy
+    // Skip next instruction if Vx != Vy.
+    // The values of Vx and Vy are compared, and if they are not equal, the program counter is 
+    // increased by 2.
+    fn sne(&mut self, x: u8, y: u8) {
+        let vx = self.v[x as usize];
+        let vy = self.v[y as usize];
+
+        if vx != vy {
+            self.pc += 2;
+        } else {
+            self.pc += 1;
+        }
+    }
+
+    // Annn - LD I, addr
+    // Set I = nnn.
+    // The value of register I is set to nnn.
+    fn ldi(&mut self, nnn: u16) {
+        self.i = nnn;
+        self.pc += 1;
+    }
+
+    // Bnnn - JP V0, addr
+    // Jump to location nnn + V0.
+    // The program counter is set to nnn plus the value of V0.
+    fn jpv0(&mut self, nnn: u16) {
+        self.pc = nnn + (self.v[0] as u16);
+    }
+
+    // Cxkk - RND Vx, byte
+    // Set Vx = random byte AND kk.
+    // The interpreter generates a random number from 0 to 255, which is then ANDed with the value 
+    // kk. The results are stored in Vx. See instruction 8xy2 for more information on AND.
+    fn rnd(&mut self, x: u8, kk: u16) {
+        let rn = rand::random::<u8>();
+        self.v[x as usize] = ((rn as u16) & kk) as u8;
         self.pc += 1;
     }
 }
