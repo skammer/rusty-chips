@@ -201,7 +201,7 @@ impl Cpu {
         [0xA, _, _, _] => self.ldi(nnn),
         [0xB, _, _, _] => self.jpv0(nnn),
         [0xC, x, _, _] => self.rnd(x, kk),
-        _ => println!("Something random")
+        _ => println!("Unimplemented opcode: {}", opcode)
       }
     }
 
@@ -450,8 +450,6 @@ impl Cpu {
         self.pc += 1;
     }
 }
-
-
 
 fn main() {
     let mut cpu: Cpu = Cpu::new();
