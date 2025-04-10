@@ -176,6 +176,7 @@ impl Cpu {
 
       let kk = opcode & 0x00ff;
       let nnn = opcode & 0x0fff;
+      let n = opcode & 0x000f;
 
       match separate_bytes[..] {
         [0, 0, 0xE, 0] => self.cls(),
@@ -201,6 +202,7 @@ impl Cpu {
         [0xA, _, _, _] => self.ldi(nnn),
         [0xB, _, _, _] => self.jpv0(nnn),
         [0xC, x, _, _] => self.rnd(x, kk),
+        [0xD, x, y, _] => self.drw(x, y, n),
         _ => println!("Unimplemented opcode: {}", opcode)
       }
     }
@@ -244,7 +246,7 @@ impl Cpu {
 
     // 2nnn - CALL addr
     // Call subroutine at nnn.
-    // The interpreter increments the stack pointer, then puts the current PC on the top of the 
+    // The interpreter increments the stack pointer, then puts the current PC on the top of the
     // stack. The PC is then set to nnn.
     fn call(&mut self, nnn: u16) {
         self.sp += 1;
@@ -254,7 +256,7 @@ impl Cpu {
 
     // 3xkk - SE Vx, byte
     // Skip next instruction if Vx = kk.
-    // The interpreter compares register Vx to kk, and if they are equal, increments the program 
+    // The interpreter compares register Vx to kk, and if they are equal, increments the program
     // counter by 2.
     fn se(&mut self, x: u8, kk: u16) {
         if self.v[x as usize] as u16 == kk  {
@@ -266,7 +268,7 @@ impl Cpu {
 
     // 4xkk - SNE Vx, byte
     // Skip next instruction if Vx != kk.
-    // The interpreter compares register Vx to kk, and if they are not equal, increments the 
+    // The interpreter compares register Vx to kk, and if they are not equal, increments the
     // program counter by 2.
     fn sen(&mut self, x: u8, kk: u16) {
         if self.v[x as usize] as u16 != kk  {
@@ -278,7 +280,7 @@ impl Cpu {
 
     // 5xy0 - SE Vx, Vy
     // Skip next instruction if Vx = Vy.
-    // The interpreter compares register Vx to register Vy, and if they are equal, increments the 
+    // The interpreter compares register Vx to register Vy, and if they are equal, increments the
     // program counter by 2.
     fn sexy(&mut self, x: u8, y: u8) {
         if self.v[x as usize] == self.v[y as usize] {
@@ -332,7 +334,7 @@ impl Cpu {
 
     // 8xy3 - XOR Vx, Vy
     // Set Vx = Vx XOR Vy.
-    // Performs a bitwise exclusive OR on the values of Vx and Vy, then stores the result in Vx. 
+    // Performs a bitwise exclusive OR on the values of Vx and Vy, then stores the result in Vx.
     fn xor(&mut self, x: u8, y: u8) {
         let res: u8 = self.v[x as usize] ^ self.v[y as usize];
         self.v[x as usize] = res;
@@ -341,8 +343,8 @@ impl Cpu {
 
     // 8xy4 - ADD Vx, Vy
     // Set Vx = Vx + Vy, set VF = carry.
-    // The values of Vx and Vy are added together. If the result is greater than 8 bits (i.e., 
-    // > 255,) VF is set to 1, otherwise 0. Only the lowest 8 bits of the result are kept, and 
+    // The values of Vx and Vy are added together. If the result is greater than 8 bits (i.e.,
+    // > 255,) VF is set to 1, otherwise 0. Only the lowest 8 bits of the result are kept, and
     // stored in Vx.
     fn add(&mut self, x: u8, y: u8) {
         let vx = self.v[x as usize];
@@ -356,7 +358,7 @@ impl Cpu {
 
     // 8xy5 - SUB Vx, Vy
     // Set Vx = Vx - Vy, set VF = NOT borrow.
-    // If Vx > Vy, then VF is set to 1, otherwise 0. Then Vy is subtracted from Vx, and the results 
+    // If Vx > Vy, then VF is set to 1, otherwise 0. Then Vy is subtracted from Vx, and the results
     // stored in Vx.
     fn sub(&mut self, x: u8, y: u8) {
         let vx = self.v[x as usize];
@@ -371,7 +373,7 @@ impl Cpu {
 
     // 8xy6 - SHR Vx {, Vy}
     // Set Vx = Vx SHR 1.
-    // If the least-significant bit of Vx is 1, then VF is set to 1, otherwise 0.  Then Vx is 
+    // If the least-significant bit of Vx is 1, then VF is set to 1, otherwise 0.  Then Vx is
     // divided by 2.
     fn shr(&mut self, x: u8, _y: u8) {
         let vx = self.v[x as usize];
@@ -384,7 +386,7 @@ impl Cpu {
 
     // 8xy7 - SUBN Vx, Vy
     // Set Vx = Vy - Vx, set VF = NOT borrow.
-    // If Vy > Vx, then VF is set to 1, otherwise 0. Then Vx is subtracted from Vy, and the results 
+    // If Vy > Vx, then VF is set to 1, otherwise 0. Then Vx is subtracted from Vy, and the results
     // stored in Vx.
     fn subn(&mut self, x: u8, y: u8) {
         let vx = self.v[x as usize];
@@ -399,7 +401,7 @@ impl Cpu {
 
     // 8xyE - SHL Vx {, Vy}
     // Set Vx = Vx SHL 1.
-    // If the most-significant bit of Vx is 1, then VF is set to 1, otherwise to 
+    // If the most-significant bit of Vx is 1, then VF is set to 1, otherwise to
     // 0. Then Vx is multiplied by 2.
     fn shl(&mut self, x: u8, _y: u8) {
         let vx = self.v[x as usize];
@@ -412,7 +414,7 @@ impl Cpu {
 
     // 9xy0 - SNE Vx, Vy
     // Skip next instruction if Vx != Vy.
-    // The values of Vx and Vy are compared, and if they are not equal, the program counter is 
+    // The values of Vx and Vy are compared, and if they are not equal, the program counter is
     // increased by 2.
     fn sne(&mut self, x: u8, y: u8) {
         let vx = self.v[x as usize];
@@ -442,11 +444,34 @@ impl Cpu {
 
     // Cxkk - RND Vx, byte
     // Set Vx = random byte AND kk.
-    // The interpreter generates a random number from 0 to 255, which is then ANDed with the value 
+    // The interpreter generates a random number from 0 to 255, which is then ANDed with the value
     // kk. The results are stored in Vx. See instruction 8xy2 for more information on AND.
     fn rnd(&mut self, x: u8, kk: u16) {
         let rn = rand::random::<u8>();
         self.v[x as usize] = ((rn as u16) & kk) as u8;
+        self.pc += 1;
+    }
+
+    // Dxyn - DRW Vx, Vy, nibble
+    // Display n-byte sprite starting at memory location I at (Vx, Vy), set VF = collision.
+
+    // The interpreter reads n bytes from memory, starting at the address stored in I.
+    // These bytes are then displayed as sprites on screen at coordinates (Vx, Vy).
+    // Sprites are XORed onto the existing screen. If this causes any pixels to be erased,
+    // VF is set to 1, otherwise it is set to 0. If the sprite is positioned so part of it
+    // is outside the coordinates of the display, it wraps around to the opposite side of the screen.
+    // See instruction 8xy3 for more information on XOR
+    fn drw(&mut self, x: u8, y: u8, n: u8) {
+
+        self.i;
+        self.memory;
+        self.display.memory;
+        self.vf;
+
+
+        let res: u8 = self.v[x as usize] ^ self.v[y as usize];
+        self.v[x as usize] = res;
+
         self.pc += 1;
     }
 }
