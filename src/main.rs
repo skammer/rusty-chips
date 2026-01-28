@@ -1,14 +1,10 @@
-#![feature(advanced_slice_patterns, slice_patterns, rustc_private)]
-
-extern crate rand;
 // use rand::Rng;
 
-// extern crate rand;
+extern crate rand;
 use rand::Rng;
 use rand::distributions::{IndependentSample, Range};
 
 // extern crate ggez;
-use std::error::Error;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
@@ -21,18 +17,36 @@ pub fn print_binary(bytes: &Vec<u8>)
     println!("");
 }
 
+
+pub fn print_display(bytes: &Vec<bool>)
+{
+    print!("---------------------------------------\n");
+    for (i, x) in bytes.iter().enumerate() {
+        if *x {
+            print!("0");
+        } else {
+            print!(" ");
+        }
+        if i % 64 == 0 && i > 0 {
+            println!("");
+        }
+    }
+    print!("\n---------------------------------------");
+    println!("");
+}
+
 pub fn read_game(path: &str) -> Vec<u8> {
     let path = Path::new(path);
     let display = path.display();
 
     let mut file = match File::open(path) {
-        Err(why) => panic!("Couldn't open file {}: {}", display, Error::description(&why)),
+        Err(why) => panic!("Couldn't open file {}: {}", display, why),
         Ok(file) => file,
     };
 
     let mut game = Vec::new();
     match file.read_to_end(&mut game) {
-        Err(why) => panic!("Couldn't read file {}: {}", display, Error::description(&why)),
+        Err(why) => panic!("Couldn't read file {}: {}", display, why),
         Ok(_) => (),
     };
 
@@ -154,6 +168,7 @@ impl Cpu {
     }
 
     pub fn execute_cycle(&mut self) {
+        println!("{}",  self.pc);
         let opcode: u16 = read_word(self.memory, self.pc);
         self.process_opcode(opcode);
     }
@@ -179,30 +194,41 @@ impl Cpu {
       let n = opcode & 0x000f;
 
       match separate_bytes[..] {
-        [0, 0, 0xE, 0] => self.cls(),
-        [0, 0, 0xE, 0xE] => self.ret(),
-        [0, _, _, _] => self.sys(),
-        [1, _, _, _] => self.jp(nnn),
-        [2, _, _, _] => self.call(nnn),
-        [3, x, _, _] => self.se(x, kk),
-        [4, x, _, _] => self.sen(x, kk),
-        [5, x, y, 0] => self.sexy(x, y),
-        [6, x, _, _] => self.ldxkk(x, kk),
-        [7, x, _, _] => self.addxkk(x, kk),
-        [8, x, y, 0] => self.ldxy(x, y),
-        [8, x, y, 1] => self.or(x, y),
-        [8, x, y, 2] => self.and(x, y),
-        [8, x, y, 3] => self.xor(x, y),
-        [8, x, y, 4] => self.add(x, y),
-        [8, x, y, 5] => self.sub(x, y),
-        [8, x, y, 6] => self.shr(x, y),
-        [8, x, y, 7] => self.subn(x, y),
-        [8, x, y, 0xE] => self.shl(x, y),
-        [9, x, y, 0] => self.sne(x, y),
-        [0xA, _, _, _] => self.ldi(nnn),
-        [0xB, _, _, _] => self.jpv0(nnn),
-        [0xC, x, _, _] => self.rnd(x, kk),
-        [0xD, x, y, _] => self.drw(x, y, n),
+        [0,   0, 0xE, 0]   => self.cls(),
+        [0,   0, 0xE, 0xE] => self.ret(),
+        [0,   _, _,   _]   => self.sys(),
+        [1,   _, _,   _]   => self.jp(nnn),
+        [2,   _, _,   _]   => self.call(nnn),
+        [3,   x, _,   _]   => self.se(x, kk),
+        [4,   x, _,   _]   => self.sen(x, kk),
+        [5,   x, y,   0]   => self.sexy(x, y),
+        [6,   x, _,   _]   => self.ldxkk(x, kk),
+        [7,   x, _,   _]   => self.addxkk(x, kk),
+        [8,   x, y,   0]   => self.ldxy(x, y),
+        [8,   x, y,   1]   => self.or(x, y),
+        [8,   x, y,   2]   => self.and(x, y),
+        [8,   x, y,   3]   => self.xor(x, y),
+        [8,   x, y,   4]   => self.add(x, y),
+        [8,   x, y,   5]   => self.sub(x, y),
+        [8,   x, y,   6]   => self.shr(x, y),
+        [8,   x, y,   7]   => self.subn(x, y),
+        [8,   x, y,   0xE] => self.shl(x, y),
+        [9,   x, y,   0]   => self.sne(x, y),
+        [0xA, _, _,   _]   => self.ldi(nnn),
+        [0xB, _, _,   _]   => self.jpv0(nnn),
+        [0xC, x, _,   _]   => self.rnd(x, kk),
+        [0xD, x, y,   _]   => self.drw(x, y, n as u8),
+        [0xE, x, 0x9, 0xE] => self.skp(x),
+        [0xE, x, 0xA, 0x1] => self.sknp(x),
+        [0xF, x, 0x0, 0x7] => self.ld_v_dt(x),
+        [0xF, x, 0x0, 0xA] => self.ld_k(x),
+        [0xF, x, 0x1, 0x5] => self.ld_dt_v(x),
+        [0xF, x, 0x1, 0x8] => self.ld_st(x),
+        [0xF, x, 0x1, 0xE] => self.add_i(x),
+        [0xF, x, 0x2, 0x9] => self.ld_f(x),
+        [0xF, x, 0x3, 0x3] => self.ld_b(x),
+        [0xF, x, 0x5, 0x5] => self.ld_i_v(x),
+        [0xF, x, 0x6, 0x5] => self.ld_v_i(x),
         _ => println!("Unimplemented opcode: {}", opcode)
       }
     }
@@ -462,18 +488,194 @@ impl Cpu {
     // is outside the coordinates of the display, it wraps around to the opposite side of the screen.
     // See instruction 8xy3 for more information on XOR
     fn drw(&mut self, x: u8, y: u8, n: u8) {
+        // Start with no collision
+        self.vf = 0;
 
-        self.i;
-        self.memory;
-        self.display.memory;
-        self.vf;
+        let x_pos = self.v[x as usize] as u16;
+        let y_pos = self.v[y as usize] as u16;
 
+        // For each row of the sprite
+        for row in 0..n {
+            // Get sprite byte from memory at I + row
+            let sprite_byte = self.memory[(self.i + row as u16) as usize];
 
-        let res: u8 = self.v[x as usize] ^ self.v[y as usize];
-        self.v[x as usize] = res;
+            // For each pixel in the row (8 pixels per byte)
+            for pixel in 0..8u16 {
+                // Check if this pixel is set in the sprite
+                if (sprite_byte & (0x80 >> pixel)) != 0 {
+                    // Calculate screen position with wraparound
+                    // Screen is 64x32, so X wraps at 64, Y wraps at 32
+                    let screen_x = (x_pos + pixel) % 64;
+                    let screen_y = (y_pos + row as u16) % 32;
+                    let idx = (screen_y * 64 + screen_x) as usize;
+
+                    // XOR pixel onto screen, check for collision
+                    if self.display.memory[idx] {
+                        self.vf = 1;
+                    }
+                    self.display.memory[idx] ^= true;
+                }
+            }
+        }
 
         self.pc += 1;
     }
+
+    // Ex9E - SKP Vx
+    // Skip next instruction if key with the value of Vx is pressed.
+    //
+    // Checks the keyboard, and if the key corresponding to the value
+    // of Vx is currently in the down position, PC is increased by 2.
+    fn skp(&mut self, x: u8) {
+        let key = self.v[x as usize] as usize;
+        if self.keypad.keys[key] {
+            self.pc += 2;
+        } else {
+            self.pc += 1;
+        }
+    }
+
+    // ExA1 - SKNP Vx
+    // Skip next instruction if key with the value of Vx is not pressed.
+    //
+    // Checks the keyboard, and if the key corresponding to the value of Vx
+    // is currently in the up position, PC is increased by 2.
+    fn sknp(&mut self, x: u8) {
+        let key = self.v[x as usize] as usize;
+        if !self.keypad.keys[key] {
+            self.pc += 2;
+        } else {
+            self.pc += 1;
+        }
+    }
+
+    // Fx07 - LD Vx, DT
+    // Set Vx = delay timer value.
+    //
+    // The value of DT is placed into Vx.
+    fn ld_v_dt(&mut self, x: u8) {
+        self.v[x as usize] = self.dt;
+        self.pc += 1;
+    }
+
+    // Fx0A - LD Vx, K
+    // Wait for a key press, store the value of the key in Vx.
+    //
+    // All execution stops until a key is pressed, then the value
+    // of that key is stored in Vx.
+    fn ld_k(&mut self, x: u8) {
+        'outer: loop {
+            for (k, v) in self.keypad.keys.iter().enumerate() {
+                if *v {
+                    self.v[x as usize] = k as u8;
+                    self.pc += 1;
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    // Fx15 - LD DT, Vx
+    // Set delay timer = Vx.
+    //
+    // DT is set equal to the value of Vx.
+    fn ld_dt_v(&mut self, x: u8) {
+        self.dt = self.v[x as usize];
+        self.pc += 1;
+    }
+
+    // Fx18 - LD ST, Vx
+    // Set sound timer = Vx.
+    //
+    // ST is set equal to the value of Vx.
+    fn ld_st(&mut self, x: u8) {
+        self.st = self.v[x as usize];
+        self.pc += 1;
+    }
+
+    // Fx1E - ADD I, Vx
+    // Set I = I + Vx.
+    //
+    // The values of I and Vx are added, and the results are stored in I.
+    fn add_i(&mut self, x: u8) {
+        self.i = self.i + self.v[x as usize] as u16;
+        self.pc += 1;
+    }
+
+    // Fx29 - LD F, Vx
+    // Set I = location of sprite for digit Vx.
+    //
+    // The value of I is set to the location for the hexadecimal sprite
+    // corresponding to the value of Vx.
+    fn ld_f(&mut self, x: u8) {
+        self.i = (self.v[x as usize] * 5) as u16; // each font char is 5 bytes
+        self.pc += 1;
+    }
+
+    // Fx33 - LD B, Vx
+    // Store BCD representation of Vx in memory locations I, I+1, and I+2.
+    //
+    // The interpreter takes the decimal value of Vx, and places the hundreds
+    // digit in memory at location in I, the tens digit at location I+1,
+    // and the ones digit at location I+2.
+    fn ld_b(&mut self, x: u8) {
+        let v = self.v[x as usize];
+        let hundreds = v / 100;
+        let tens = v % 100 / 10;
+        let ones = v % 10;
+
+        let i = self.i as usize;
+
+        self.memory[i]   = hundreds;
+        self.memory[i+1] = tens;
+        self.memory[i+2] = ones;
+
+        self.pc += 1;
+    }
+
+    // Fx55 - LD [I], Vx
+    // Store registers V0 through Vx in memory starting at location I.
+    //
+    // The interpreter copies the values of registers V0 through Vx into memory, starting at the address in I.
+    fn ld_i_v(&mut self, x: u8) {
+
+        for idx in 0..x {
+            let v = self.v[idx as usize];
+            self.memory[(self.i + idx as u16) as usize] = v;
+        }
+
+        self.pc += 1;
+    }
+
+    // Fx65 - LD Vx, [I]
+    // Read registers V0 through Vx from memory starting at location I.
+    //
+    // The interpreter reads values from memory starting at location
+    // I into registers V0 through Vx.
+    fn ld_v_i(&mut self, x: u8) {
+
+        for idx in 0..x {
+            let m = self.memory[(self.i + idx as u16) as usize];
+            self.v[idx as usize] = m;
+        }
+
+        self.pc += 1;
+    }
+
+
+
+
+    // Super Chip-48 Instructions
+    // 00Cn - SCD nibble
+    // 00FB - SCR
+    // 00FC - SCL
+    // 00FD - EXIT
+    // 00FE - LOW
+    // 00FF - HIGH
+    // Dxy0 - DRW Vx, Vy, 0
+    // Fx30 - LD HF, Vx
+    // Fx75 - LD R, Vx
+    // Fx85 - LD Vx, R
 }
 
 fn main() {
@@ -481,13 +683,22 @@ fn main() {
 
     println!("Game");
 
-    let game: Vec<u8> = read_game("./games/PONG");
+    // let game: Vec<u8> = read_game("./games/PONG");
+    let game: Vec<u8> = read_game("./games/1-chip8-logo.ch8");
 
     println!("Memory");
 
+    // print_binary(&cpu.memory.to_vec());
     cpu.load_game(game);
+    // print_binary(&cpu.memory.to_vec());
 
-    cpu.execute_cycle();
+
+    for i in 0..10 {
+        cpu.execute_cycle();
+    }
+
+
+    print_display(&cpu.display.memory.to_vec());
 
     println!("Running CHIP-8 CPU");
     println!("timers running at 60hz");

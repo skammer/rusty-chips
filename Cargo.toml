@@ -2,7 +2,6 @@
 name = "rusty-chips"
 version = "0.0.1"
 authors = ["Max Vasiliev <max@vasiliev.me>"]
-build = "src/main.rs"
 
 [dependencies]
 itertools-num = "0.1.1"
