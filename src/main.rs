@@ -20,7 +20,11 @@ pub fn print_binary(bytes: &Vec<u8>)
 
 pub fn print_display(bytes: &Vec<bool>)
 {
-    print!("---------------------------------------\n");
+    for _ in 0..64 {
+        print!("-");
+    }
+    print!("\n");
+
     for (i, x) in bytes.iter().enumerate() {
         if *x {
             print!("0");
@@ -31,7 +35,10 @@ pub fn print_display(bytes: &Vec<bool>)
             println!("");
         }
     }
-    print!("\n---------------------------------------");
+    print!("\n");
+    for _ in 0..64 {
+        print!("-");
+    }
     println!("");
 }
 
@@ -168,7 +175,7 @@ impl Cpu {
     }
 
     pub fn execute_cycle(&mut self) {
-        println!("{}",  self.pc);
+        // println!("{}",  self.pc);
         let opcode: u16 = read_word(self.memory, self.pc);
         self.process_opcode(opcode);
     }
@@ -183,11 +190,11 @@ impl Cpu {
     }
 
     fn process_opcode(&mut self, opcode: u16) {
-      println!("processing opcode, {:x}", opcode);
+      // println!("processing opcode, {:x}", opcode);
 
       let separate_bytes = self.split_u4(opcode);
 
-      print_binary(&separate_bytes);
+      // print_binary(&separate_bytes);
 
       let kk = opcode & 0x00ff;
       let nnn = opcode & 0x0fff;
@@ -242,14 +249,14 @@ impl Cpu {
     // This instruction is only used on the old computers on which Chip-8 was originally
     // implemented. It is ignored by modern interpreters.
     fn sys(&mut self) {
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 00E0 - CLS
     // Clear the display.
     fn cls(&mut self) {
         self.display.clear();
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 00EE - RET
@@ -286,9 +293,9 @@ impl Cpu {
     // counter by 2.
     fn se(&mut self, x: u8, kk: u16) {
         if self.v[x as usize] as u16 == kk  {
-            self.pc += 2;
+            self.pc += 4;
         } else {
-            self.pc += 1;
+            self.pc += 2;
         }
     }
 
@@ -298,9 +305,9 @@ impl Cpu {
     // program counter by 2.
     fn sen(&mut self, x: u8, kk: u16) {
         if self.v[x as usize] as u16 != kk  {
-            self.pc += 2;
+            self.pc += 4;
         } else {
-            self.pc += 1;
+            self.pc += 2;
         }
     }
 
@@ -310,9 +317,9 @@ impl Cpu {
     // program counter by 2.
     fn sexy(&mut self, x: u8, y: u8) {
         if self.v[x as usize] == self.v[y as usize] {
-            self.pc += 2;
+            self.pc += 4;
         } else {
-            self.pc += 1;
+            self.pc += 2;
         }
     }
 
@@ -321,7 +328,7 @@ impl Cpu {
     // The interpreter puts the value kk into register Vx.
     fn ldxkk(&mut self, x: u8, kk: u16) {
         self.v[x as usize] = kk as u8;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 7xkk - ADD Vx, byte
@@ -329,7 +336,7 @@ impl Cpu {
     // Adds the value kk to the value of register Vx, then stores the result in Vx.
     fn addxkk(&mut self, x: u8, kk: u16) {
         self.v[x as usize] += kk as u8;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 8xy0 - LD Vx, Vy
@@ -337,7 +344,7 @@ impl Cpu {
     // Stores the value of register Vy in register Vx.
     fn ldxy(&mut self, x: u8, y: u8) {
         self.v[x as usize] = self.v[y as usize];
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 8xy1 - OR Vx, Vy
@@ -346,7 +353,7 @@ impl Cpu {
     fn or(&mut self, x: u8, y: u8) {
         let res: u8 = self.v[x as usize] | self.v[y as usize];
         self.v[x as usize] = res;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 8xy2 - AND Vx, Vy
@@ -355,7 +362,7 @@ impl Cpu {
     fn and(&mut self, x: u8, y: u8) {
         let res: u8 = self.v[x as usize] & self.v[y as usize];
         self.v[x as usize] = res;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 8xy3 - XOR Vx, Vy
@@ -364,7 +371,7 @@ impl Cpu {
     fn xor(&mut self, x: u8, y: u8) {
         let res: u8 = self.v[x as usize] ^ self.v[y as usize];
         self.v[x as usize] = res;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 8xy4 - ADD Vx, Vy
@@ -379,7 +386,7 @@ impl Cpu {
 
         self.v[x as usize] = res;
         self.vf = carry;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 8xy5 - SUB Vx, Vy
@@ -394,7 +401,7 @@ impl Cpu {
 
         self.v[x as usize] = res;
         self.vf = carry;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 8xy6 - SHR Vx {, Vy}
@@ -407,7 +414,7 @@ impl Cpu {
 
         self.v[x as usize] = vx >> 1;
         self.vf = carry;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 8xy7 - SUBN Vx, Vy
@@ -422,7 +429,7 @@ impl Cpu {
 
         self.v[x as usize] = res;
         self.vf = carry;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 8xyE - SHL Vx {, Vy}
@@ -435,7 +442,7 @@ impl Cpu {
 
         self.v[x as usize] = vx << 1;
         self.vf = carry;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // 9xy0 - SNE Vx, Vy
@@ -447,9 +454,9 @@ impl Cpu {
         let vy = self.v[y as usize];
 
         if vx != vy {
-            self.pc += 2;
+            self.pc += 4;
         } else {
-            self.pc += 1;
+            self.pc += 2;
         }
     }
 
@@ -458,7 +465,7 @@ impl Cpu {
     // The value of register I is set to nnn.
     fn ldi(&mut self, nnn: u16) {
         self.i = nnn;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // Bnnn - JP V0, addr
@@ -475,7 +482,7 @@ impl Cpu {
     fn rnd(&mut self, x: u8, kk: u16) {
         let rn = rand::random::<u8>();
         self.v[x as usize] = ((rn as u16) & kk) as u8;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // Dxyn - DRW Vx, Vy, nibble
@@ -518,7 +525,7 @@ impl Cpu {
             }
         }
 
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // Ex9E - SKP Vx
@@ -529,9 +536,9 @@ impl Cpu {
     fn skp(&mut self, x: u8) {
         let key = self.v[x as usize] as usize;
         if self.keypad.keys[key] {
-            self.pc += 2;
+            self.pc += 4;
         } else {
-            self.pc += 1;
+            self.pc += 2;
         }
     }
 
@@ -543,9 +550,9 @@ impl Cpu {
     fn sknp(&mut self, x: u8) {
         let key = self.v[x as usize] as usize;
         if !self.keypad.keys[key] {
-            self.pc += 2;
+            self.pc += 4;
         } else {
-            self.pc += 1;
+            self.pc += 2;
         }
     }
 
@@ -555,7 +562,7 @@ impl Cpu {
     // The value of DT is placed into Vx.
     fn ld_v_dt(&mut self, x: u8) {
         self.v[x as usize] = self.dt;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // Fx0A - LD Vx, K
@@ -568,7 +575,7 @@ impl Cpu {
             for (k, v) in self.keypad.keys.iter().enumerate() {
                 if *v {
                     self.v[x as usize] = k as u8;
-                    self.pc += 1;
+                    self.pc += 2;
                     break 'outer;
                 }
             }
@@ -581,7 +588,7 @@ impl Cpu {
     // DT is set equal to the value of Vx.
     fn ld_dt_v(&mut self, x: u8) {
         self.dt = self.v[x as usize];
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // Fx18 - LD ST, Vx
@@ -590,7 +597,7 @@ impl Cpu {
     // ST is set equal to the value of Vx.
     fn ld_st(&mut self, x: u8) {
         self.st = self.v[x as usize];
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // Fx1E - ADD I, Vx
@@ -599,7 +606,7 @@ impl Cpu {
     // The values of I and Vx are added, and the results are stored in I.
     fn add_i(&mut self, x: u8) {
         self.i = self.i + self.v[x as usize] as u16;
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // Fx29 - LD F, Vx
@@ -609,7 +616,7 @@ impl Cpu {
     // corresponding to the value of Vx.
     fn ld_f(&mut self, x: u8) {
         self.i = (self.v[x as usize] * 5) as u16; // each font char is 5 bytes
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // Fx33 - LD B, Vx
@@ -630,7 +637,7 @@ impl Cpu {
         self.memory[i+1] = tens;
         self.memory[i+2] = ones;
 
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // Fx55 - LD [I], Vx
@@ -644,7 +651,7 @@ impl Cpu {
             self.memory[(self.i + idx as u16) as usize] = v;
         }
 
-        self.pc += 1;
+        self.pc += 2;
     }
 
     // Fx65 - LD Vx, [I]
@@ -659,7 +666,7 @@ impl Cpu {
             self.v[idx as usize] = m;
         }
 
-        self.pc += 1;
+        self.pc += 2;
     }
 
 
@@ -693,7 +700,7 @@ fn main() {
     // print_binary(&cpu.memory.to_vec());
 
 
-    for i in 0..10 {
+    for i in 0..2000 {
         cpu.execute_cycle();
     }
 
