@@ -142,6 +142,9 @@ pub struct Cpu {
     // Internal cycle divider for 60 Hz timers.
     pub tick_divider_counter: u32,
     pub key_detection_index: usize,
+    pub super_chip: bool,
+    pub display_height: u8,
+    pub display_width: u8,
 }
 
 fn read_word(memory: &[u8; 4096], counter: u16) -> u16 {
@@ -163,6 +166,9 @@ impl Cpu {
             keypad: Keypad::new(),
             display: Display::new(),
             key_detection_index: 0,
+            super_chip: false,
+            display_height: 32,
+            display_width: 64,
         };
 
         cpu.memory[..FONTSET.len()].clone_from_slice(&FONTSET);
@@ -382,6 +388,7 @@ impl Cpu {
     fn or(&mut self, x: u8, y: u8) {
         let res: u8 = self.v[x as usize] | self.v[y as usize];
         self.v[x as usize] = res;
+        self.v[0xf] = 0;
     }
 
     // 8xy2 - AND Vx, Vy
@@ -390,6 +397,7 @@ impl Cpu {
     fn and(&mut self, x: u8, y: u8) {
         let res: u8 = self.v[x as usize] & self.v[y as usize];
         self.v[x as usize] = res;
+        self.v[0xf] = 0;
     }
 
     // 8xy3 - XOR Vx, Vy
@@ -398,6 +406,7 @@ impl Cpu {
     fn xor(&mut self, x: u8, y: u8) {
         let res: u8 = self.v[x as usize] ^ self.v[y as usize];
         self.v[x as usize] = res;
+        self.v[0xf] = 0;
     }
 
     // 8xy4 - ADD Vx, Vy
@@ -433,12 +442,16 @@ impl Cpu {
     // Set Vx = Vx SHR 1.
     // If the least-significant bit of Vx is 1, then VF is set to 1, otherwise 0.  Then Vx is
     // divided by 2.
-    fn shr(&mut self, x: u8, _y: u8) {
-        let vx = self.v[x as usize];
+    fn shr(&mut self, x: u8, y: u8) {
+        // NOTE: ignore y if CHIP-48 and SUPER-CHIP
+        let vx;
+        if self.super_chip {
+            vx = self.v[x as usize];
+        } else {
+            vx = self.v[y as usize];
+        }
         let carry: u8 = vx & 0x1;
         let res = vx >> 1;
-
-        // println!("8xy6 {vx} {res} {carry}");
 
         self.v[x as usize] = res;
         self.v[0xf] = carry;
@@ -462,9 +475,16 @@ impl Cpu {
     // Set Vx = Vx SHL 1.
     // If the most-significant bit of Vx is 1, then VF is set to 1, otherwise to
     // 0. Then Vx is multiplied by 2.
-    fn shl(&mut self, x: u8, _y: u8) {
-        let vx = self.v[x as usize];
-        let carry: u8 = (vx >> 7) & 1;
+    fn shl(&mut self, x: u8, y: u8) {
+        // NOTE: ignore y if CHIP-48 and SUPER-CHIP
+        let vx;
+        if self.super_chip {
+            vx = self.v[x as usize];
+        } else {
+            vx = self.v[y as usize];
+        }
+
+        let carry: u8 = (vx >> 7) & 0x1;
         let res = vx << 1;
 
         self.v[x as usize] = res;
@@ -518,35 +538,54 @@ impl Cpu {
     // is outside the coordinates of the display, it wraps around to the opposite side of the screen.
     // See instruction 8xy3 for more information on XOR
     fn drw(&mut self, x: u8, y: u8, n: u8) {
-        // Start with no collision
-        self.v[0xf] = 0;
 
-        let x_pos = self.v[x as usize] as u16;
-        let y_pos = self.v[y as usize] as u16;
+        // running at timer clock speed is apparently too slow.
+        // running at about 2x the timer clock speed seems to be ok
+        if self.tick_divider_counter < (TICK_DIVISOR / 2) {
+            // Start with no collision
+            self.v[0xf] = 0;
 
-        // For each row of the sprite
-        for row in 0..n {
-            // Get sprite byte from memory at I + row
-            let sprite_byte = self.memory[(self.i + row as u16) as usize];
+            let x_pos = self.v[x as usize] as u16;
+            let y_pos = self.v[y as usize] as u16;
 
-            // For each pixel in the row (8 pixels per byte)
-            for pixel in 0..8u16 {
-                // Check if this pixel is set in the sprite
-                if (sprite_byte & (0x80 >> pixel)) != 0 {
+            // For each row of the sprite
+            for row in 0..n {
+                // Get sprite byte from memory at I + row
+                let sprite_byte = self.memory[(self.i + row as u16) as usize];
+                let screen_y = (y_pos + row as u16) % self.display_height as u16;
+
+                // For each pixel in the row (8 pixels per byte)
+                for col in 0..8u16 {
                     // Calculate screen position with wraparound
-                    // Screen is 64x32, so X wraps at 64, Y wraps at 32
-                    let screen_x = (x_pos + pixel) % 64;
-                    let screen_y = (y_pos + row as u16) % 32;
-                    let idx = (screen_y * 64 + screen_x) as usize;
+                    let screen_x = (x_pos + col) % self.display_width as u16;
+                    let idx = (screen_y * self.display_width as u16 + screen_x) as usize;
 
-                    // XOR pixel onto screen, check for collision
-                    if self.display.memory[idx] {
-                        self.v[0xf] = 1;
+                    // Check if this pixel is set in the sprite
+                    if (sprite_byte & (0b1000_0000 >> col)) > 0 {
+                        // XOR pixel onto screen, check for collision
+                        if self.display.memory[idx] {
+                            self.v[0xf] = 1;
+                        }
+
+                        self.display.memory[idx] ^= true;
                     }
-                    self.display.memory[idx] ^= true;
+
+                    if screen_x == self.display_width as u16 - 1 {
+                        break;
+                    }
+                }
+
+                if screen_y == self.display_height as u16 - 1 {
+                    break;
                 }
             }
+        } else {
+            // Loop until we get the tick (blanking interval)
+            self.pc -= 2;
         }
+
+
+
     }
 
     // Ex9E - SKP Vx
@@ -672,12 +711,15 @@ impl Cpu {
     // Fx55 - LD [I], Vx
     // Store registers V0 through Vx in memory starting at location I.
     //
-    // The interpreter copies the values of registers V0 through Vx into memory, starting at the address in I.
+    // The interpreter copies the values of registers V0 through Vx
+    // into memory, starting at the address in I.
     fn ld_i_v(&mut self, x: u8) {
         for idx in 0..=x {
             let v = self.v[idx as usize];
             self.memory[(self.i + idx as u16) as usize] = v;
         }
+        // NOTE: modern behaviour is not to increment the i register
+        self.i = self.i + x as u16 + 1;
     }
 
     // Fx65 - LD Vx, [I]
@@ -690,6 +732,8 @@ impl Cpu {
             let m = self.memory[(self.i + idx as u16) as usize];
             self.v[idx as usize] = m;
         }
+        // NOTE: modern behaviour is not to increment the i register
+        self.i = self.i + x as u16 + 1;
     }
 
     // Super Chip-48 Instructions
