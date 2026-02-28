@@ -130,8 +130,6 @@ pub struct Cpu {
     pub dt: u8,
     // sound timer
     pub st: u8,
-    // overflow flag
-    pub vf: u8,
 }
 
 fn read_word(memory: &[u8; 4096], counter: u16) -> u16 {
@@ -149,7 +147,6 @@ impl Cpu {
             sp: 0,
             dt: 0,
             st: 0,
-            vf: 0,
             keypad: Keypad::new(),
             display: Display::new(),
         };
@@ -171,14 +168,36 @@ impl Cpu {
         // print_binary(&self.memory.to_vec());
     }
 
+    pub fn tick(&mut self) {
+        if self.dt > 0 {
+            self.dt -= 1;
+        }
+
+        if self.st > 0 {
+            if self.st == 1 {
+                // Beep the beeper
+            }
+
+            self.st -= 1;
+        }
+    }
+
     pub fn execute_cycle(&mut self) {
         if (self.pc as usize) > self.memory.len().saturating_sub(1) {
             return;
         }
         // println!("{}",  self.pc);
         let opcode: u16 = read_word(&self.memory, self.pc);
-        self.process_opcode(opcode);
         self.pc = self.pc.saturating_add(2);
+        self.tick();
+        self.process_opcode(opcode);
+    }
+
+    pub fn current_opcode(&self) -> Option<u16> {
+        if (self.pc as usize) >= self.memory.len().saturating_sub(1) {
+            return None;
+        }
+        Some(read_word(&self.memory, self.pc))
     }
 
     pub fn split_u4(&mut self, opcode: u16) -> Vec<u8> {
@@ -249,8 +268,7 @@ impl Cpu {
     // Jump to a machine code routine at nnn.
     // This instruction is only used on the old computers on which Chip-8 was originally
     // implemented. It is ignored by modern interpreters.
-    fn sys(&mut self) {
-    }
+    fn sys(&mut self) {}
 
     // 00E0 - CLS
     // Clear the display.
@@ -292,7 +310,6 @@ impl Cpu {
         if self.v[x as usize] as u16 == kk {
             self.pc += 2;
         } else {
-
         }
     }
 
@@ -371,17 +388,13 @@ impl Cpu {
     // > 255,) VF is set to 1, otherwise 0. Only the lowest 8 bits of the result are kept, and
     // stored in Vx.
     fn add(&mut self, x: u8, y: u8) {
-        let vx = self.v[x as usize] as u16;
-        let vy = self.v[y as usize] as u16;
-        let res: u16 = vx + vy;
-        let carry: u8 = if res > 255 { 1 } else { 0 };
+        let vx = self.v[x as usize];
+        let vy = self.v[y as usize];
+        let (new_vx, carry) = vx.overflowing_add(vy);
+        let vf: u8 = if carry { 1 } else { 0 };
 
-        // let a = (res & 0x00FF) as u8;
-
-        // println!("{vx} {vy} {res} {a} {carry}");
-
-        self.v[x as usize] = (res & 0x00FF) as u8;
-        self.vf = carry;
+        self.v[x as usize] = new_vx;
+        self.v[0xf] = vf;
     }
 
     // 8xy5 - SUB Vx, Vy
@@ -391,11 +404,11 @@ impl Cpu {
     fn sub(&mut self, x: u8, y: u8) {
         let vx = self.v[x as usize];
         let vy = self.v[y as usize];
-        let res: u8 = vx.wrapping_sub(vy);
-        let carry: u8 = if vx > vy { 1 } else { 0 };
+        let (res, borrow) = vx.overflowing_sub(vy);
+        let carry: u8 = if borrow { 0 } else { 1 };
 
         self.v[x as usize] = res;
-        self.vf = carry;
+        self.v[0xf] = carry;
     }
 
     // 8xy6 - SHR Vx {, Vy}
@@ -410,7 +423,7 @@ impl Cpu {
         // println!("8xy6 {vx} {res} {carry}");
 
         self.v[x as usize] = res;
-        self.vf = carry;
+        self.v[0xf] = carry;
     }
 
     // 8xy7 - SUBN Vx, Vy
@@ -420,13 +433,11 @@ impl Cpu {
     fn subn(&mut self, x: u8, y: u8) {
         let vx = self.v[x as usize];
         let vy = self.v[y as usize];
-        let res: u8 = vy.wrapping_sub(vx);
-        let carry: u8 = if vy > vx { 1 } else { 0 };
-
-        // println!("8xy7 {vx} {vy} {res} {carry}");
+        let (res, borrow) = vy.overflowing_sub(vx);
+        let carry: u8 = if borrow { 0 } else { 1 };
 
         self.v[x as usize] = res;
-        self.vf = carry;
+        self.v[0xf] = carry;
     }
 
     // 8xyE - SHL Vx {, Vy}
@@ -435,11 +446,11 @@ impl Cpu {
     // 0. Then Vx is multiplied by 2.
     fn shl(&mut self, x: u8, _y: u8) {
         let vx = self.v[x as usize];
-        let carry: u8 = vx & 0x80;
+        let carry: u8 = (vx >> 7) & 1;
         let res = vx << 1;
 
         self.v[x as usize] = res;
-        self.vf = carry;
+        self.v[0xf] = carry;
     }
 
     // 9xy0 - SNE Vx, Vy
@@ -490,7 +501,7 @@ impl Cpu {
     // See instruction 8xy3 for more information on XOR
     fn drw(&mut self, x: u8, y: u8, n: u8) {
         // Start with no collision
-        self.vf = 0;
+        self.v[0xf] = 0;
 
         let x_pos = self.v[x as usize] as u16;
         let y_pos = self.v[y as usize] as u16;
@@ -512,7 +523,7 @@ impl Cpu {
 
                     // XOR pixel onto screen, check for collision
                     if self.display.memory[idx] {
-                        self.vf = 1;
+                        self.v[0xf] = 1;
                     }
                     self.display.memory[idx] ^= true;
                 }
@@ -560,12 +571,18 @@ impl Cpu {
     // All execution stops until a key is pressed, then the value
     // of that key is stored in Vx.
     fn ld_k(&mut self, x: u8) {
+        let mut pressed = false;
         for (k, v) in self.keypad.keys.iter().enumerate() {
             if *v {
                 self.v[x as usize] = k as u8;
-                // self.pc += 2;
-                return;
+                pressed = true;
+                break;
             }
+        }
+
+        // block until something is pressed
+        if !pressed {
+            self.pc -= 2;
         }
     }
 
@@ -638,7 +655,7 @@ impl Cpu {
     // The interpreter reads values from memory starting at location
     // I into registers V0 through Vx.
     fn ld_v_i(&mut self, x: u8) {
-        for idx in 0..x {
+        for idx in 0..=x {
             let m = self.memory[(self.i + idx as u16) as usize];
             self.v[idx as usize] = m;
         }
@@ -741,7 +758,7 @@ fn render_hex_view(
     ui: &mut egui::Ui,
     data: &[u8],
     base_addr: usize,
-    highlight_addr: Option<usize>,
+    highlight_addrs: &[usize],
     id_salt: &'static str,
     max_height: f32,
 ) {
@@ -760,7 +777,7 @@ fn render_hex_view(
                     for (col, byte) in chunk.iter().enumerate() {
                         let addr = row_addr + col;
                         let mut text = RichText::new(format!("{byte:02X}")).monospace();
-                        if Some(addr) == highlight_addr {
+                        if highlight_addrs.contains(&addr) {
                             text = text.background_color(Color32::YELLOW).color(Color32::BLACK);
                         }
                         ui.label(text);
@@ -772,12 +789,31 @@ fn render_hex_view(
 
 fn render_registers(ui: &mut egui::Ui, cpu: &Cpu) {
     ui.label(RichText::new("Registers").strong());
+    let opcode = cpu
+        .current_opcode()
+        .map(|op| format!("{op:04X}"))
+        .unwrap_or_else(|| "----".to_string());
+    let keyboard_mask = cpu
+        .keypad
+        .keys
+        .iter()
+        .enumerate()
+        .fold(
+            0u16,
+            |acc, (idx, pressed)| {
+                if *pressed { acc | (1u16 << idx) } else { acc }
+            },
+        );
     egui::Grid::new("core_registers_grid")
         .num_columns(2)
         .striped(true)
         .show(ui, |ui| {
             ui.monospace("PC");
             ui.monospace(format!("{:03X}", cpu.pc));
+            ui.end_row();
+
+            ui.monospace("OP");
+            ui.monospace(opcode.clone());
             ui.end_row();
 
             ui.monospace("I");
@@ -797,7 +833,11 @@ fn render_registers(ui: &mut egui::Ui, cpu: &Cpu) {
             ui.end_row();
 
             ui.monospace("VF");
-            ui.monospace(format!("{:02X}", cpu.vf));
+            ui.monospace(format!("{:02X}", cpu.v[0xf]));
+            ui.end_row();
+
+            ui.monospace("KBD");
+            ui.monospace(format!("{keyboard_mask:04X}"));
             ui.end_row();
         });
 
@@ -836,7 +876,7 @@ impl ChipApp {
             selected_game: 0,
             loaded_rom: Vec::new(),
             running: false,
-            cycles_per_frame: 50,
+            cycles_per_frame: 1,
             jump_steps: 100,
             error: None,
         };
@@ -1016,7 +1056,7 @@ impl eframe::App for ChipApp {
                     &mut columns[1],
                     &self.loaded_rom,
                     0x200,
-                    None,
+                    &[],
                     "rom_hex",
                     300.0,
                 );
@@ -1024,11 +1064,13 @@ impl eframe::App for ChipApp {
                 columns[1].separator();
                 columns[1]
                     .label(RichText::new(format!("Memory (PC -> 0x{:03X})", self.cpu.pc)).strong());
+                let pc = self.cpu.pc as usize;
+                let opcode_bytes = [pc, pc.saturating_add(1)];
                 render_hex_view(
                     &mut columns[1],
                     &self.cpu.memory,
                     0x000,
-                    Some(self.cpu.pc as usize),
+                    &opcode_bytes,
                     "memory_hex",
                     500.0,
                 );
