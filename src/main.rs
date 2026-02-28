@@ -7,6 +7,12 @@ use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use egui::{Color32, RichText, ScrollArea};
@@ -61,6 +67,7 @@ pub fn read_game(path: &str) -> Vec<u8> {
     game
 }
 
+#[derive(Clone)]
 pub struct Keypad {
     pub keys: [bool; 16],
 }
@@ -73,6 +80,7 @@ impl Keypad {
     }
 }
 
+#[derive(Clone)]
 pub struct Display {
     pub memory: [bool; 2048],
 }
@@ -110,6 +118,7 @@ static FONTSET: [u8; 80] = [
     0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 ];
 
+#[derive(Clone)]
 pub struct Cpu {
     // index register
     pub i: u16,
@@ -130,6 +139,9 @@ pub struct Cpu {
     pub dt: u8,
     // sound timer
     pub st: u8,
+    // Internal cycle divider for 60 Hz timers.
+    pub tick_divider_counter: u32,
+    pub key_detection_index: usize,
 }
 
 fn read_word(memory: &[u8; 4096], counter: u16) -> u16 {
@@ -147,8 +159,10 @@ impl Cpu {
             sp: 0,
             dt: 0,
             st: 0,
+            tick_divider_counter: 0,
             keypad: Keypad::new(),
             display: Display::new(),
+            key_detection_index: 0,
         };
 
         cpu.memory[..FONTSET.len()].clone_from_slice(&FONTSET);
@@ -189,7 +203,11 @@ impl Cpu {
         // println!("{}",  self.pc);
         let opcode: u16 = read_word(&self.memory, self.pc);
         self.pc = self.pc.saturating_add(2);
-        self.tick();
+        self.tick_divider_counter = self.tick_divider_counter.saturating_add(1);
+        if self.tick_divider_counter >= TICK_DIVISOR {
+            self.tick_divider_counter = 0;
+            self.tick();
+        }
         self.process_opcode(opcode);
     }
 
@@ -571,17 +589,30 @@ impl Cpu {
     // All execution stops until a key is pressed, then the value
     // of that key is stored in Vx.
     fn ld_k(&mut self, x: u8) {
-        let mut pressed = false;
+        let mut released = false;
+
         for (k, v) in self.keypad.keys.iter().enumerate() {
-            if *v {
-                self.v[x as usize] = k as u8;
-                pressed = true;
+
+            if self.key_detection_index == 0 {
+                if *v {
+                    self.key_detection_index = k;
+                    self.st = 4;
+                    break;
+                }
+            } else if self.key_detection_index == k && !*v {
+                released = true;
                 break;
             }
         }
 
+        if released {
+            self.v[x as usize] = self.key_detection_index as u8;
+            self.key_detection_index = 0;
+            return;
+        }
+
         // block until something is pressed
-        if !pressed {
+        if self.key_detection_index == 0 {
             self.pc -= 2;
         }
     }
@@ -685,6 +716,11 @@ const CHIP8_KEYS: [[u8; 4]; 4] = [
     [0x7, 0x8, 0x9, 0xE],
     [0xA, 0x0, 0xB, 0xF],
 ];
+
+const RUN_HZ: u32 = 540;
+const TICK_HZ: u32 = 60;
+const TICK_DIVISOR: u32 = RUN_HZ / TICK_HZ;
+const MAX_STEPS_PER_FRAME: usize = 4096;
 
 fn is_game_file(path: &Path) -> bool {
     if !path.is_file() {
@@ -856,70 +892,37 @@ fn render_registers(ui: &mut egui::Ui, cpu: &Cpu) {
         });
 }
 
-struct ChipApp {
+#[derive(Clone)]
+struct EmulatorSnapshot {
     cpu: Cpu,
-    games: Vec<GameEntry>,
-    selected_game: usize,
     loaded_rom: Vec<u8>,
     running: bool,
-    cycles_per_frame: usize,
-    jump_steps: usize,
     error: Option<String>,
 }
 
-impl ChipApp {
-    fn new() -> ChipApp {
-        let games = discover_games(Path::new("./games"));
-        let mut app = ChipApp {
+struct EmulatorState {
+    cpu: Cpu,
+    loaded_rom: Vec<u8>,
+    running: bool,
+    error: Option<String>,
+}
+
+impl EmulatorState {
+    fn new() -> EmulatorState {
+        EmulatorState {
             cpu: Cpu::new(),
-            games,
-            selected_game: 0,
             loaded_rom: Vec::new(),
             running: false,
-            cycles_per_frame: 1,
-            jump_steps: 100,
             error: None,
-        };
-
-        if app.games.is_empty() {
-            app.error = Some("No games found under ./games".to_string());
-        } else {
-            app.reload_selected_game();
         }
-
-        app
     }
 
-    fn selected_game_name(&self) -> String {
-        self.games
-            .get(self.selected_game)
-            .map(|g| g.name.clone())
-            .unwrap_or_else(|| "No games".to_string())
-    }
-
-    fn reload_selected_game(&mut self) {
+    fn load_game(&mut self, rom: Vec<u8>) {
         self.running = false;
-
-        let Some(path) = self.games.get(self.selected_game).map(|g| g.path.clone()) else {
-            self.cpu = Cpu::new();
-            self.loaded_rom.clear();
-            self.error = Some("No games available to load".to_string());
-            return;
-        };
-
-        match fs::read(&path) {
-            Ok(rom) => {
-                self.loaded_rom = rom;
-                self.cpu = Cpu::new();
-                self.cpu.load_game(&self.loaded_rom);
-                self.error = None;
-            }
-            Err(err) => {
-                self.cpu = Cpu::new();
-                self.loaded_rom.clear();
-                self.error = Some(format!("Failed to load {}: {err}", path.display()));
-            }
-        }
+        self.cpu = Cpu::new();
+        self.loaded_rom = rom;
+        self.cpu.load_game(&self.loaded_rom);
+        self.error = None;
     }
 
     fn reset_current_game(&mut self) {
@@ -940,14 +943,160 @@ impl ChipApp {
             self.cpu.execute_cycle();
         }
     }
+
+    fn snapshot(&self) -> EmulatorSnapshot {
+        EmulatorSnapshot {
+            cpu: self.cpu.clone(),
+            loaded_rom: self.loaded_rom.clone(),
+            running: self.running,
+            error: self.error.clone(),
+        }
+    }
+}
+
+fn spawn_emulator_thread(
+    emulator: Arc<Mutex<EmulatorState>>,
+    worker_stop: Arc<AtomicBool>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let tick = Duration::from_secs_f64(1.0 / RUN_HZ as f64);
+        let mut next_tick = Instant::now() + tick;
+
+        while !worker_stop.load(Ordering::Relaxed) {
+            let now = Instant::now();
+            if now < next_tick {
+                thread::sleep(next_tick - now);
+                continue;
+            }
+
+            let mut due_steps = 0usize;
+            let now = Instant::now();
+            while due_steps < MAX_STEPS_PER_FRAME && now >= next_tick {
+                due_steps += 1;
+                next_tick += tick;
+            }
+
+            if due_steps == MAX_STEPS_PER_FRAME {
+                next_tick = Instant::now() + tick;
+            }
+
+            if due_steps > 0 {
+                let mut emulator = emulator.lock().unwrap_or_else(|poison| poison.into_inner());
+                if emulator.running {
+                    emulator.run_steps(due_steps);
+                }
+            }
+        }
+    })
+}
+
+struct ChipApp {
+    emulator: Arc<Mutex<EmulatorState>>,
+    worker_stop: Arc<AtomicBool>,
+    worker_handle: Option<JoinHandle<()>>,
+    games: Vec<GameEntry>,
+    selected_game: usize,
+    jump_steps: usize,
+}
+
+impl Drop for ChipApp {
+    fn drop(&mut self) {
+        self.worker_stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.worker_handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl ChipApp {
+    fn new() -> ChipApp {
+        let games = discover_games(Path::new("./games"));
+        let emulator = Arc::new(Mutex::new(EmulatorState::new()));
+        let worker_stop = Arc::new(AtomicBool::new(false));
+        let worker_handle = Some(spawn_emulator_thread(
+            Arc::clone(&emulator),
+            Arc::clone(&worker_stop),
+        ));
+
+        let mut app = ChipApp {
+            emulator,
+            worker_stop,
+            worker_handle,
+            games,
+            selected_game: 0,
+            jump_steps: 100,
+        };
+
+        if app.games.is_empty() {
+            app.with_emulator_mut(|emulator| {
+                emulator.error = Some("No games found under ./games".to_string());
+            });
+        } else {
+            app.reload_selected_game();
+        }
+
+        app
+    }
+
+    fn with_emulator_mut<R>(&self, f: impl FnOnce(&mut EmulatorState) -> R) -> R {
+        let mut emulator = self
+            .emulator
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        f(&mut emulator)
+    }
+
+    fn emulator_snapshot(&self) -> EmulatorSnapshot {
+        let emulator = self
+            .emulator
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        emulator.snapshot()
+    }
+
+    fn selected_game_name(&self) -> String {
+        self.games
+            .get(self.selected_game)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "No games".to_string())
+    }
+
+    fn reload_selected_game(&mut self) {
+        let Some(path) = self.games.get(self.selected_game).map(|g| g.path.clone()) else {
+            self.with_emulator_mut(|emulator| {
+                *emulator = EmulatorState::new();
+                emulator.error = Some("No games available to load".to_string());
+            });
+            return;
+        };
+
+        match fs::read(&path) {
+            Ok(rom) => {
+                self.with_emulator_mut(|emulator| {
+                    emulator.load_game(rom);
+                });
+            }
+            Err(err) => {
+                self.with_emulator_mut(|emulator| {
+                    *emulator = EmulatorState::new();
+                    emulator.error = Some(format!("Failed to load {}: {err}", path.display()));
+                });
+            }
+        }
+    }
 }
 
 impl eframe::App for ChipApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.running {
-            self.run_steps(self.cycles_per_frame.max(1));
-            ctx.request_repaint();
-        }
+        ctx.request_repaint_after(Duration::from_millis(16));
+
+        let snapshot = self.emulator_snapshot();
+        let mut toggle_running = false;
+        let mut step_once = false;
+        let mut reset = false;
+        let mut jump_requested = false;
+        let mut release_all_keys = false;
+        let mut toggled_keys: Vec<u8> = Vec::new();
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.columns(2, |columns| {
@@ -970,23 +1119,19 @@ impl eframe::App for ChipApp {
                 }
 
                 columns[0].horizontal(|ui| {
-                    let run_label = if self.running { "Stop" } else { "Start" };
+                    let run_label = if snapshot.running { "Stop" } else { "Start" };
                     if ui.button(run_label).clicked() {
-                        self.running = !self.running;
+                        toggle_running = true;
                     }
                     if ui.button("Step").clicked() {
-                        self.running = false;
-                        self.run_steps(1);
+                        step_once = true;
                     }
                     if ui.button("Reset").clicked() {
-                        self.reset_current_game();
+                        reset = true;
                     }
                 });
-
-                columns[0].add(
-                    egui::Slider::new(&mut self.cycles_per_frame, 1..=20_000)
-                        .text("Cycle rate (cycles/frame)"),
-                );
+                columns[0].label(format!("Run rate: {RUN_HZ} Hz"));
+                columns[0].label(format!("Timer tick: {TICK_HZ} Hz"));
 
                 columns[0].horizontal(|ui| {
                     ui.add(
@@ -996,30 +1141,33 @@ impl eframe::App for ChipApp {
                             .prefix("N="),
                     );
                     if ui.button("Jump N").clicked() {
-                        self.running = false;
-                        self.run_steps(self.jump_steps);
+                        jump_requested = true;
                     }
                 });
 
                 columns[0].label(format!(
                     "Execution: {}",
-                    if self.running { "Running" } else { "Stopped" }
+                    if snapshot.running {
+                        "Running"
+                    } else {
+                        "Stopped"
+                    }
                 ));
 
-                if let Some(error) = &self.error {
+                if let Some(error) = &snapshot.error {
                     columns[0].colored_label(Color32::LIGHT_RED, error);
                 }
 
                 columns[0].separator();
                 columns[0].label("Display bitmap");
-                draw_display_bitmap(&mut columns[0], &self.cpu.display.memory, 8.0);
+                draw_display_bitmap(&mut columns[0], &snapshot.cpu.display.memory, 8.0);
 
                 columns[0].separator();
                 columns[0].label("CHIP-8 keypad");
                 for row in CHIP8_KEYS {
                     columns[0].horizontal(|ui| {
                         for key in row {
-                            let pressed = self.cpu.keypad.keys[key as usize];
+                            let pressed = snapshot.cpu.keypad.keys[key as usize];
                             let fill = if pressed {
                                 Color32::from_rgb(50, 130, 60)
                             } else {
@@ -1037,24 +1185,24 @@ impl eframe::App for ChipApp {
                                 .add_sized([34.0, 28.0], egui::Button::new(text).fill(fill))
                                 .clicked()
                             {
-                                self.cpu.keypad.keys[key as usize] = !pressed;
+                                toggled_keys.push(key);
                             }
                         }
                     });
                 }
                 if columns[0].button("Release all keys").clicked() {
-                    self.cpu.keypad.keys = [false; 16];
+                    release_all_keys = true;
                 }
 
                 columns[0].separator();
-                render_registers(&mut columns[0], &self.cpu);
+                render_registers(&mut columns[0], &snapshot.cpu);
 
                 columns[1].heading("Hex Views");
-                columns[1].label(format!("ROM bytes: {}", self.loaded_rom.len()));
+                columns[1].label(format!("ROM bytes: {}", snapshot.loaded_rom.len()));
                 columns[1].label(RichText::new("Loaded ROM (base 0x200)").strong());
                 render_hex_view(
                     &mut columns[1],
-                    &self.loaded_rom,
+                    &snapshot.loaded_rom,
                     0x200,
                     &[],
                     "rom_hex",
@@ -1062,13 +1210,14 @@ impl eframe::App for ChipApp {
                 );
 
                 columns[1].separator();
-                columns[1]
-                    .label(RichText::new(format!("Memory (PC -> 0x{:03X})", self.cpu.pc)).strong());
-                let pc = self.cpu.pc as usize;
+                columns[1].label(
+                    RichText::new(format!("Memory (PC -> 0x{:03X})", snapshot.cpu.pc)).strong(),
+                );
+                let pc = snapshot.cpu.pc as usize;
                 let opcode_bytes = [pc, pc.saturating_add(1)];
                 render_hex_view(
                     &mut columns[1],
-                    &self.cpu.memory,
+                    &snapshot.cpu.memory,
                     0x000,
                     &opcode_bytes,
                     "memory_hex",
@@ -1076,6 +1225,39 @@ impl eframe::App for ChipApp {
                 );
             });
         });
+
+        if toggle_running
+            || step_once
+            || reset
+            || jump_requested
+            || release_all_keys
+            || !toggled_keys.is_empty()
+        {
+            let jump_steps = self.jump_steps;
+            self.with_emulator_mut(|emulator| {
+                if toggle_running {
+                    emulator.running = !emulator.running;
+                }
+                if step_once {
+                    emulator.running = false;
+                    emulator.run_steps(1);
+                }
+                if reset {
+                    emulator.reset_current_game();
+                }
+                if jump_requested {
+                    emulator.running = false;
+                    emulator.run_steps(jump_steps);
+                }
+                if release_all_keys {
+                    emulator.cpu.keypad.keys = [false; 16];
+                }
+                for key in toggled_keys {
+                    let idx = key as usize;
+                    emulator.cpu.keypad.keys[idx] = !emulator.cpu.keypad.keys[idx];
+                }
+            });
+        }
     }
 }
 
