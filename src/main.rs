@@ -1,28 +1,24 @@
 // use rand::Rng;
 
 extern crate rand;
-use rand::Rng;
-use rand::distributions::{IndependentSample, Range};
 
 // extern crate ggez;
+use std::fs;
 use std::fs::File;
 use std::io::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
-use egui::{Key, ScrollArea};
+use egui::{Color32, RichText, ScrollArea};
 
-pub fn print_binary(bytes: &Vec<u8>)
-{
+pub fn print_binary(bytes: &Vec<u8>) {
     for x in bytes.iter() {
         print!("{:x}", x)
     }
     println!("");
 }
 
-
-pub fn print_display(bytes: &Vec<bool>)
-{
+pub fn print_display(bytes: &Vec<bool>) {
     for _ in 0..64 {
         print!("-");
     }
@@ -66,27 +62,25 @@ pub fn read_game(path: &str) -> Vec<u8> {
 }
 
 pub struct Keypad {
-    pub keys: [bool; 16]
+    pub keys: [bool; 16],
 }
 
 impl Keypad {
     pub fn new() -> Keypad {
-        let keypad = Keypad {
-            keys: [false; 16]
-        };
+        let keypad = Keypad { keys: [false; 16] };
 
         keypad
     }
 }
 
 pub struct Display {
-    pub memory: [bool; 2048]
+    pub memory: [bool; 2048],
 }
 
 impl Display {
     pub fn new() -> Display {
         let display = Display {
-            memory: [false; 2048]
+            memory: [false; 2048],
         };
 
         display
@@ -113,7 +107,7 @@ static FONTSET: [u8; 80] = [
     0xF0, 0x80, 0x80, 0x80, 0xF0, // C
     0xE0, 0x90, 0x90, 0x90, 0xE0, // D
     0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-    0xF0, 0x80, 0xF0, 0x80, 0x80  // F
+    0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 ];
 
 pub struct Cpu {
@@ -137,13 +131,11 @@ pub struct Cpu {
     // sound timer
     pub st: u8,
     // overflow flag
-    pub vf: u8
+    pub vf: u8,
 }
 
-
-fn read_word(memory: [u8; 4096], counter: u16) -> u16 {
-    (memory[counter as usize] as u16) << 8
-        | (memory[(counter + 1) as usize] as u16)
+fn read_word(memory: &[u8; 4096], counter: u16) -> u16 {
+    (memory[counter as usize] as u16) << 8 | (memory[(counter + 1) as usize] as u16)
 }
 
 impl Cpu {
@@ -159,7 +151,7 @@ impl Cpu {
             st: 0,
             vf: 0,
             keypad: Keypad::new(),
-            display: Display::new()
+            display: Display::new(),
         };
 
         cpu.memory[..FONTSET.len()].clone_from_slice(&FONTSET);
@@ -169,18 +161,24 @@ impl Cpu {
         cpu
     }
 
-    pub fn load_game(&mut self, game: Vec<u8>) {
+    pub fn load_game(&mut self, game: &[u8]) {
         let start = 512;
-        let end = start + game.len();
-        self.memory[start..end].clone_from_slice(&game);
+        let max_len = self.memory.len().saturating_sub(start);
+        let game_len = game.len().min(max_len);
+        let end = start + game_len;
+        self.memory[start..end].clone_from_slice(&game[..game_len]);
 
         // print_binary(&self.memory.to_vec());
     }
 
     pub fn execute_cycle(&mut self) {
+        if (self.pc as usize) > self.memory.len().saturating_sub(1) {
+            return;
+        }
         // println!("{}",  self.pc);
-        let opcode: u16 = read_word(self.memory, self.pc);
+        let opcode: u16 = read_word(&self.memory, self.pc);
         self.process_opcode(opcode);
+        self.pc = self.pc.saturating_add(2);
     }
 
     pub fn split_u4(&mut self, opcode: u16) -> Vec<u8> {
@@ -189,58 +187,58 @@ impl Cpu {
         let u4_2: u8 = ((opcode & 0x00f0) >> 4) as u8;
         let u4_3: u8 = (opcode & 0x000f) as u8;
 
-        vec!(u4_0, u4_1, u4_2, u4_3)
+        vec![u4_0, u4_1, u4_2, u4_3]
     }
 
     fn process_opcode(&mut self, opcode: u16) {
-      // println!("processing opcode, {:x}", opcode);
+        // println!("processing opcode, {:x}", opcode);
 
-      let separate_bytes = self.split_u4(opcode);
+        let separate_bytes = self.split_u4(opcode);
 
-      // print_binary(&separate_bytes);
+        // print_binary(&separate_bytes);
 
-      let kk = opcode & 0x00ff;
-      let nnn = opcode & 0x0fff;
-      let n = opcode & 0x000f;
+        let kk = opcode & 0x00ff;
+        let nnn = opcode & 0x0fff;
+        let n = opcode & 0x000f;
 
-      match separate_bytes[..] {
-        [0,   0, 0xE, 0]   => self.cls(),
-        [0,   0, 0xE, 0xE] => self.ret(),
-        [0,   _, _,   _]   => self.sys(),
-        [1,   _, _,   _]   => self.jp(nnn),
-        [2,   _, _,   _]   => self.call(nnn),
-        [3,   x, _,   _]   => self.se(x, kk),
-        [4,   x, _,   _]   => self.sen(x, kk),
-        [5,   x, y,   0]   => self.sexy(x, y),
-        [6,   x, _,   _]   => self.ldxkk(x, kk),
-        [7,   x, _,   _]   => self.addxkk(x, kk),
-        [8,   x, y,   0]   => self.ldxy(x, y),
-        [8,   x, y,   1]   => self.or(x, y),
-        [8,   x, y,   2]   => self.and(x, y),
-        [8,   x, y,   3]   => self.xor(x, y),
-        [8,   x, y,   4]   => self.add(x, y),
-        [8,   x, y,   5]   => self.sub(x, y),
-        [8,   x, y,   6]   => self.shr(x, y),
-        [8,   x, y,   7]   => self.subn(x, y),
-        [8,   x, y,   0xE] => self.shl(x, y),
-        [9,   x, y,   0]   => self.sne(x, y),
-        [0xA, _, _,   _]   => self.ldi(nnn),
-        [0xB, _, _,   _]   => self.jpv0(nnn),
-        [0xC, x, _,   _]   => self.rnd(x, kk),
-        [0xD, x, y,   _]   => self.drw(x, y, n as u8),
-        [0xE, x, 0x9, 0xE] => self.skp(x),
-        [0xE, x, 0xA, 0x1] => self.sknp(x),
-        [0xF, x, 0x0, 0x7] => self.ld_v_dt(x),
-        [0xF, x, 0x0, 0xA] => self.ld_k(x),
-        [0xF, x, 0x1, 0x5] => self.ld_dt_v(x),
-        [0xF, x, 0x1, 0x8] => self.ld_st(x),
-        [0xF, x, 0x1, 0xE] => self.add_i(x),
-        [0xF, x, 0x2, 0x9] => self.ld_f(x),
-        [0xF, x, 0x3, 0x3] => self.ld_b(x),
-        [0xF, x, 0x5, 0x5] => self.ld_i_v(x),
-        [0xF, x, 0x6, 0x5] => self.ld_v_i(x),
-        _ => println!("Unimplemented opcode: {:x}", opcode)
-      }
+        match separate_bytes[..] {
+            [0, 0, 0xE, 0] => self.cls(),
+            [0, 0, 0xE, 0xE] => self.ret(),
+            [0, _, _, _] => self.sys(),
+            [1, _, _, _] => self.jp(nnn),
+            [2, _, _, _] => self.call(nnn),
+            [3, x, _, _] => self.se(x, kk),
+            [4, x, _, _] => self.sen(x, kk),
+            [5, x, y, 0] => self.sexy(x, y),
+            [6, x, _, _] => self.ldxkk(x, kk),
+            [7, x, _, _] => self.addxkk(x, kk),
+            [8, x, y, 0] => self.ldxy(x, y),
+            [8, x, y, 1] => self.or(x, y),
+            [8, x, y, 2] => self.and(x, y),
+            [8, x, y, 3] => self.xor(x, y),
+            [8, x, y, 4] => self.add(x, y),
+            [8, x, y, 5] => self.sub(x, y),
+            [8, x, y, 6] => self.shr(x, y),
+            [8, x, y, 7] => self.subn(x, y),
+            [8, x, y, 0xE] => self.shl(x, y),
+            [9, x, y, 0] => self.sne(x, y),
+            [0xA, _, _, _] => self.ldi(nnn),
+            [0xB, _, _, _] => self.jpv0(nnn),
+            [0xC, x, _, _] => self.rnd(x, kk),
+            [0xD, x, y, _] => self.drw(x, y, n as u8),
+            [0xE, x, 0x9, 0xE] => self.skp(x),
+            [0xE, x, 0xA, 0x1] => self.sknp(x),
+            [0xF, x, 0x0, 0x7] => self.ld_v_dt(x),
+            [0xF, x, 0x0, 0xA] => self.ld_k(x),
+            [0xF, x, 0x1, 0x5] => self.ld_dt_v(x),
+            [0xF, x, 0x1, 0x8] => self.ld_st(x),
+            [0xF, x, 0x1, 0xE] => self.add_i(x),
+            [0xF, x, 0x2, 0x9] => self.ld_f(x),
+            [0xF, x, 0x3, 0x3] => self.ld_b(x),
+            [0xF, x, 0x5, 0x5] => self.ld_i_v(x),
+            [0xF, x, 0x6, 0x5] => self.ld_v_i(x),
+            _ => println!("Unimplemented opcode: {:x}", opcode),
+        }
     }
 
     //
@@ -252,16 +250,12 @@ impl Cpu {
     // This instruction is only used on the old computers on which Chip-8 was originally
     // implemented. It is ignored by modern interpreters.
     fn sys(&mut self) {
-        println!("SYS");
-        self.pc += 2;
     }
 
     // 00E0 - CLS
     // Clear the display.
     fn cls(&mut self) {
-        println!("ClS");
         self.display.clear();
-        self.pc += 2;
     }
 
     // 00EE - RET
@@ -271,8 +265,6 @@ impl Cpu {
     fn ret(&mut self) {
         self.pc = *self.stack.get(self.sp as usize).unwrap();
         self.sp = self.sp.saturating_sub(1);
-        println!("RET");
-        self.pc += 2;
     }
 
     // 1nnn - JP addr
@@ -280,8 +272,6 @@ impl Cpu {
     // The interpreter sets the program counter to nnn.
     fn jp(&mut self, nnn: u16) {
         self.pc = nnn;
-        println!("JP {nnn}");
-        self.pc += 2;
     }
 
     // 2nnn - CALL addr
@@ -289,11 +279,9 @@ impl Cpu {
     // The interpreter increments the stack pointer, then puts the current PC on the top of the
     // stack. The PC is then set to nnn.
     fn call(&mut self, nnn: u16) {
-        println!("CALL {nnn}");
         self.sp = self.sp.wrapping_add(1);
         self.stack[self.sp as usize] = self.pc;
         self.pc = nnn;
-        self.pc += 4;
     }
 
     // 3xkk - SE Vx, byte
@@ -301,11 +289,10 @@ impl Cpu {
     // The interpreter compares register Vx to kk, and if they are equal, increments the program
     // counter by 2.
     fn se(&mut self, x: u8, kk: u16) {
-        println!("SE {x} {kk}");
-        if self.v[x as usize] as u16 == kk  {
-            self.pc += 4;
-        } else {
+        if self.v[x as usize] as u16 == kk {
             self.pc += 2;
+        } else {
+
         }
     }
 
@@ -314,11 +301,9 @@ impl Cpu {
     // The interpreter compares register Vx to kk, and if they are not equal, increments the
     // program counter by 2.
     fn sen(&mut self, x: u8, kk: u16) {
-        println!("SEN {x} {kk}");
-        if self.v[x as usize] as u16 != kk  {
-            self.pc += 4;
-        } else {
+        if self.v[x as usize] as u16 != kk {
             self.pc += 2;
+        } else {
         }
     }
 
@@ -327,11 +312,9 @@ impl Cpu {
     // The interpreter compares register Vx to register Vy, and if they are equal, increments the
     // program counter by 2.
     fn sexy(&mut self, x: u8, y: u8) {
-        println!("SEXY {x} {y}");
         if self.v[x as usize] == self.v[y as usize] {
-            self.pc += 4;
-        } else {
             self.pc += 2;
+        } else {
         }
     }
 
@@ -339,39 +322,31 @@ impl Cpu {
     // Set Vx = kk.
     // The interpreter puts the value kk into register Vx.
     fn ldxkk(&mut self, x: u8, kk: u16) {
-        println!("LD {x} {kk}");
         self.v[x as usize] = kk as u8;
-        self.pc += 2;
     }
 
     // 7xkk - ADD Vx, byte
     // Set Vx = Vx + kk.
     // Adds the value kk to the value of register Vx, then stores the result in Vx.
     fn addxkk(&mut self, x: u8, kk: u16) {
-        println!("ADD {x} {kk}");
         let mut vx = self.v[x as usize];
         vx = vx.wrapping_add(kk as u8);
         self.v[x as usize] = vx;
-        self.pc += 2;
     }
 
     // 8xy0 - LD Vx, Vy
     // Set Vx = Vy.
     // Stores the value of register Vy in register Vx.
     fn ldxy(&mut self, x: u8, y: u8) {
-        println!("LD {x} {y}");
         self.v[x as usize] = self.v[y as usize];
-        self.pc += 2;
     }
 
     // 8xy1 - OR Vx, Vy
     // Set Vx = Vx OR Vy.
     // Performs a bitwise OR on the values of Vx and Vy, then stores the result in Vx.
     fn or(&mut self, x: u8, y: u8) {
-        println!("OR {x} {y}");
         let res: u8 = self.v[x as usize] | self.v[y as usize];
         self.v[x as usize] = res;
-        self.pc += 2;
     }
 
     // 8xy2 - AND Vx, Vy
@@ -380,7 +355,6 @@ impl Cpu {
     fn and(&mut self, x: u8, y: u8) {
         let res: u8 = self.v[x as usize] & self.v[y as usize];
         self.v[x as usize] = res;
-        self.pc += 2;
     }
 
     // 8xy3 - XOR Vx, Vy
@@ -389,7 +363,6 @@ impl Cpu {
     fn xor(&mut self, x: u8, y: u8) {
         let res: u8 = self.v[x as usize] ^ self.v[y as usize];
         self.v[x as usize] = res;
-        self.pc += 2;
     }
 
     // 8xy4 - ADD Vx, Vy
@@ -409,7 +382,6 @@ impl Cpu {
 
         self.v[x as usize] = (res & 0x00FF) as u8;
         self.vf = carry;
-        self.pc += 2;
     }
 
     // 8xy5 - SUB Vx, Vy
@@ -424,7 +396,6 @@ impl Cpu {
 
         self.v[x as usize] = res;
         self.vf = carry;
-        self.pc += 2;
     }
 
     // 8xy6 - SHR Vx {, Vy}
@@ -440,7 +411,6 @@ impl Cpu {
 
         self.v[x as usize] = res;
         self.vf = carry;
-        self.pc += 2;
     }
 
     // 8xy7 - SUBN Vx, Vy
@@ -457,7 +427,6 @@ impl Cpu {
 
         self.v[x as usize] = res;
         self.vf = carry;
-        self.pc += 2;
     }
 
     // 8xyE - SHL Vx {, Vy}
@@ -469,11 +438,8 @@ impl Cpu {
         let carry: u8 = vx & 0x80;
         let res = vx << 1;
 
-        println!("8xyE {vx} {res} {carry}");
-
         self.v[x as usize] = res;
         self.vf = carry;
-        self.pc += 2;
     }
 
     // 9xy0 - SNE Vx, Vy
@@ -485,9 +451,8 @@ impl Cpu {
         let vy = self.v[y as usize];
 
         if vx != vy {
-            self.pc += 4;
-        } else {
             self.pc += 2;
+        } else {
         }
     }
 
@@ -496,7 +461,6 @@ impl Cpu {
     // The value of register I is set to nnn.
     fn ldi(&mut self, nnn: u16) {
         self.i = nnn;
-        self.pc += 2;
     }
 
     // Bnnn - JP V0, addr
@@ -513,7 +477,6 @@ impl Cpu {
     fn rnd(&mut self, x: u8, kk: u16) {
         let rn = rand::random::<u8>();
         self.v[x as usize] = ((rn as u16) & kk) as u8;
-        self.pc += 2;
     }
 
     // Dxyn - DRW Vx, Vy, nibble
@@ -555,8 +518,6 @@ impl Cpu {
                 }
             }
         }
-
-        self.pc += 2;
     }
 
     // Ex9E - SKP Vx
@@ -567,9 +528,8 @@ impl Cpu {
     fn skp(&mut self, x: u8) {
         let key = self.v[x as usize] as usize;
         if self.keypad.keys[key] {
-            self.pc += 4;
-        } else {
             self.pc += 2;
+        } else {
         }
     }
 
@@ -581,9 +541,8 @@ impl Cpu {
     fn sknp(&mut self, x: u8) {
         let key = self.v[x as usize] as usize;
         if !self.keypad.keys[key] {
-            self.pc += 4;
-        } else {
             self.pc += 2;
+        } else {
         }
     }
 
@@ -593,7 +552,6 @@ impl Cpu {
     // The value of DT is placed into Vx.
     fn ld_v_dt(&mut self, x: u8) {
         self.v[x as usize] = self.dt;
-        self.pc += 2;
     }
 
     // Fx0A - LD Vx, K
@@ -602,13 +560,11 @@ impl Cpu {
     // All execution stops until a key is pressed, then the value
     // of that key is stored in Vx.
     fn ld_k(&mut self, x: u8) {
-        'outer: loop {
-            for (k, v) in self.keypad.keys.iter().enumerate() {
-                if *v {
-                    self.v[x as usize] = k as u8;
-                    self.pc += 2;
-                    break 'outer;
-                }
+        for (k, v) in self.keypad.keys.iter().enumerate() {
+            if *v {
+                self.v[x as usize] = k as u8;
+                // self.pc += 2;
+                return;
             }
         }
     }
@@ -619,7 +575,6 @@ impl Cpu {
     // DT is set equal to the value of Vx.
     fn ld_dt_v(&mut self, x: u8) {
         self.dt = self.v[x as usize];
-        self.pc += 2;
     }
 
     // Fx18 - LD ST, Vx
@@ -628,7 +583,6 @@ impl Cpu {
     // ST is set equal to the value of Vx.
     fn ld_st(&mut self, x: u8) {
         self.st = self.v[x as usize];
-        self.pc += 2;
     }
 
     // Fx1E - ADD I, Vx
@@ -637,7 +591,6 @@ impl Cpu {
     // The values of I and Vx are added, and the results are stored in I.
     fn add_i(&mut self, x: u8) {
         self.i = self.i + self.v[x as usize] as u16;
-        self.pc += 2;
     }
 
     // Fx29 - LD F, Vx
@@ -647,7 +600,6 @@ impl Cpu {
     // corresponding to the value of Vx.
     fn ld_f(&mut self, x: u8) {
         self.i = (self.v[x as usize] * 5) as u16; // each font char is 5 bytes
-        self.pc += 2;
     }
 
     // Fx33 - LD B, Vx
@@ -664,11 +616,9 @@ impl Cpu {
 
         let i = self.i as usize;
 
-        self.memory[i]   = hundreds;
-        self.memory[i+1] = tens;
-        self.memory[i+2] = ones;
-
-        self.pc += 2;
+        self.memory[i] = hundreds;
+        self.memory[i + 1] = tens;
+        self.memory[i + 2] = ones;
     }
 
     // Fx55 - LD [I], Vx
@@ -676,13 +626,10 @@ impl Cpu {
     //
     // The interpreter copies the values of registers V0 through Vx into memory, starting at the address in I.
     fn ld_i_v(&mut self, x: u8) {
-
         for idx in 0..=x {
             let v = self.v[idx as usize];
             self.memory[(self.i + idx as u16) as usize] = v;
         }
-
-        self.pc += 2;
     }
 
     // Fx65 - LD Vx, [I]
@@ -691,13 +638,10 @@ impl Cpu {
     // The interpreter reads values from memory starting at location
     // I into registers V0 through Vx.
     fn ld_v_i(&mut self, x: u8) {
-
         for idx in 0..x {
             let m = self.memory[(self.i + idx as u16) as usize];
             self.v[idx as usize] = m;
         }
-
-        self.pc += 2;
     }
 
     // Super Chip-48 Instructions
@@ -713,91 +657,396 @@ impl Cpu {
     // Fx85 - LD Vx, R
 }
 
-fn main() {
-    let mut cpu: Cpu = Cpu::new();
-
-    println!("Game");
-
-    // let game: Vec<u8> = read_game("./games/PONG");
-    // let game: Vec<u8> = read_game("./games/1-chip8-logo.ch8");
-    // let game: Vec<u8> = read_game("./games/2-ibm-logo.ch8");
-    // let game: Vec<u8> = read_game("./games/3-corax+.ch8");
-    let game: Vec<u8> = read_game("./games/4-flags.ch8");
-
-    println!("Memory");
-
-    // print_binary(&cpu.memory.to_vec());
-    cpu.load_game(game);
-    // print_binary(&cpu.memory.to_vec());
-
-
-    for _i in 0..1500 {
-        cpu.execute_cycle();
-    }
-
-
-    print_display(&cpu.display.memory.to_vec());
-
-    println!("Running CHIP-8 CPU");
-    println!("timers running at 60hz");
+struct GameEntry {
+    name: String,
+    path: PathBuf,
 }
 
+const CHIP8_KEYS: [[u8; 4]; 4] = [
+    [0x1, 0x2, 0x3, 0xC],
+    [0x4, 0x5, 0x6, 0xD],
+    [0x7, 0x8, 0x9, 0xE],
+    [0xA, 0x0, 0xB, 0xF],
+];
 
-fn main_2() -> eframe::Result<()> {
-    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
+fn is_game_file(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => {
+            let lower = ext.to_ascii_lowercase();
+            lower == "ch8" || lower == "c8k"
+        }
+        None => true,
+    }
+}
+
+fn collect_games(root: &Path, dir: &Path, out: &mut Vec<GameEntry>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_games(root, &path, out);
+            continue;
+        }
+
+        if !is_game_file(&path) {
+            continue;
+        }
+
+        let relative = path.strip_prefix(root).unwrap_or(&path);
+        out.push(GameEntry {
+            name: relative.display().to_string(),
+            path,
+        });
+    }
+}
+
+fn discover_games(root: &Path) -> Vec<GameEntry> {
+    let mut games = Vec::new();
+    collect_games(root, root, &mut games);
+    games.sort_by(|a, b| a.name.cmp(&b.name));
+    games
+}
+
+fn draw_display_bitmap(ui: &mut egui::Ui, display: &[bool; 2048], pixel_size: f32) {
+    let pixel_size = pixel_size.max(1.0);
+    let desired = egui::vec2(64.0 * pixel_size, 32.0 * pixel_size);
+    let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+
+    painter.rect_filled(rect, 0.0, Color32::from_rgb(12, 12, 12));
+
+    for y in 0..32 {
+        for x in 0..64 {
+            let idx = y * 64 + x;
+            if display[idx] {
+                let pixel_rect = egui::Rect::from_min_size(
+                    rect.min + egui::vec2(x as f32 * pixel_size, y as f32 * pixel_size),
+                    egui::vec2(pixel_size, pixel_size),
+                );
+                painter.rect_filled(pixel_rect, 0.0, Color32::from_rgb(230, 230, 230));
+            }
+        }
+    }
+}
+
+fn render_hex_view(
+    ui: &mut egui::Ui,
+    data: &[u8],
+    base_addr: usize,
+    highlight_addr: Option<usize>,
+    id_salt: &'static str,
+    max_height: f32,
+) {
+    ScrollArea::vertical()
+        .id_salt(id_salt)
+        .max_height(max_height)
+        .show(ui, |ui| {
+            for (row_idx, chunk) in data.chunks(16).enumerate() {
+                let row_addr = base_addr + row_idx * 16;
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!("{row_addr:03X}:"))
+                            .monospace()
+                            .color(Color32::LIGHT_BLUE),
+                    );
+                    for (col, byte) in chunk.iter().enumerate() {
+                        let addr = row_addr + col;
+                        let mut text = RichText::new(format!("{byte:02X}")).monospace();
+                        if Some(addr) == highlight_addr {
+                            text = text.background_color(Color32::YELLOW).color(Color32::BLACK);
+                        }
+                        ui.label(text);
+                    }
+                });
+            }
+        });
+}
+
+fn render_registers(ui: &mut egui::Ui, cpu: &Cpu) {
+    ui.label(RichText::new("Registers").strong());
+    egui::Grid::new("core_registers_grid")
+        .num_columns(2)
+        .striped(true)
+        .show(ui, |ui| {
+            ui.monospace("PC");
+            ui.monospace(format!("{:03X}", cpu.pc));
+            ui.end_row();
+
+            ui.monospace("I");
+            ui.monospace(format!("{:03X}", cpu.i));
+            ui.end_row();
+
+            ui.monospace("SP");
+            ui.monospace(format!("{:02X}", cpu.sp));
+            ui.end_row();
+
+            ui.monospace("DT");
+            ui.monospace(format!("{:02X}", cpu.dt));
+            ui.end_row();
+
+            ui.monospace("ST");
+            ui.monospace(format!("{:02X}", cpu.st));
+            ui.end_row();
+
+            ui.monospace("VF");
+            ui.monospace(format!("{:02X}", cpu.vf));
+            ui.end_row();
+        });
+
+    ui.add_space(8.0);
+    egui::Grid::new("v_registers_grid")
+        .num_columns(8)
+        .striped(true)
+        .show(ui, |ui| {
+            for idx in 0..16 {
+                ui.monospace(format!("V{idx:X}"));
+                ui.monospace(format!("{:02X}", cpu.v[idx]));
+                if idx % 4 == 3 {
+                    ui.end_row();
+                }
+            }
+        });
+}
+
+struct ChipApp {
+    cpu: Cpu,
+    games: Vec<GameEntry>,
+    selected_game: usize,
+    loaded_rom: Vec<u8>,
+    running: bool,
+    cycles_per_frame: usize,
+    jump_steps: usize,
+    error: Option<String>,
+}
+
+impl ChipApp {
+    fn new() -> ChipApp {
+        let games = discover_games(Path::new("./games"));
+        let mut app = ChipApp {
+            cpu: Cpu::new(),
+            games,
+            selected_game: 0,
+            loaded_rom: Vec::new(),
+            running: false,
+            cycles_per_frame: 50,
+            jump_steps: 100,
+            error: None,
+        };
+
+        if app.games.is_empty() {
+            app.error = Some("No games found under ./games".to_string());
+        } else {
+            app.reload_selected_game();
+        }
+
+        app
+    }
+
+    fn selected_game_name(&self) -> String {
+        self.games
+            .get(self.selected_game)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "No games".to_string())
+    }
+
+    fn reload_selected_game(&mut self) {
+        self.running = false;
+
+        let Some(path) = self.games.get(self.selected_game).map(|g| g.path.clone()) else {
+            self.cpu = Cpu::new();
+            self.loaded_rom.clear();
+            self.error = Some("No games available to load".to_string());
+            return;
+        };
+
+        match fs::read(&path) {
+            Ok(rom) => {
+                self.loaded_rom = rom;
+                self.cpu = Cpu::new();
+                self.cpu.load_game(&self.loaded_rom);
+                self.error = None;
+            }
+            Err(err) => {
+                self.cpu = Cpu::new();
+                self.loaded_rom.clear();
+                self.error = Some(format!("Failed to load {}: {err}", path.display()));
+            }
+        }
+    }
+
+    fn reset_current_game(&mut self) {
+        self.running = false;
+        self.cpu = Cpu::new();
+        if !self.loaded_rom.is_empty() {
+            self.cpu.load_game(&self.loaded_rom);
+        }
+    }
+
+    fn run_steps(&mut self, steps: usize) {
+        for _ in 0..steps {
+            if (self.cpu.pc as usize) >= self.cpu.memory.len().saturating_sub(1) {
+                self.running = false;
+                self.error = Some(format!("PC out of bounds: 0x{:03X}", self.cpu.pc));
+                break;
+            }
+            self.cpu.execute_cycle();
+        }
+    }
+}
+
+impl eframe::App for ChipApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.running {
+            self.run_steps(self.cycles_per_frame.max(1));
+            ctx.request_repaint();
+        }
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.columns(2, |columns| {
+                columns[0].heading("CHIP-8 Debugger");
+                if !self.games.is_empty() {
+                    let mut next_selected = self.selected_game;
+                    egui::ComboBox::from_label("Game")
+                        .selected_text(self.selected_game_name())
+                        .show_ui(&mut columns[0], |ui| {
+                            for (idx, game) in self.games.iter().enumerate() {
+                                ui.selectable_value(&mut next_selected, idx, &game.name);
+                            }
+                        });
+                    if next_selected != self.selected_game {
+                        self.selected_game = next_selected;
+                        self.reload_selected_game();
+                    }
+                } else {
+                    columns[0].label("No game binaries discovered.");
+                }
+
+                columns[0].horizontal(|ui| {
+                    let run_label = if self.running { "Stop" } else { "Start" };
+                    if ui.button(run_label).clicked() {
+                        self.running = !self.running;
+                    }
+                    if ui.button("Step").clicked() {
+                        self.running = false;
+                        self.run_steps(1);
+                    }
+                    if ui.button("Reset").clicked() {
+                        self.reset_current_game();
+                    }
+                });
+
+                columns[0].add(
+                    egui::Slider::new(&mut self.cycles_per_frame, 1..=20_000)
+                        .text("Cycle rate (cycles/frame)"),
+                );
+
+                columns[0].horizontal(|ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut self.jump_steps)
+                            .range(1..=500_000)
+                            .speed(1.0)
+                            .prefix("N="),
+                    );
+                    if ui.button("Jump N").clicked() {
+                        self.running = false;
+                        self.run_steps(self.jump_steps);
+                    }
+                });
+
+                columns[0].label(format!(
+                    "Execution: {}",
+                    if self.running { "Running" } else { "Stopped" }
+                ));
+
+                if let Some(error) = &self.error {
+                    columns[0].colored_label(Color32::LIGHT_RED, error);
+                }
+
+                columns[0].separator();
+                columns[0].label("Display bitmap");
+                draw_display_bitmap(&mut columns[0], &self.cpu.display.memory, 8.0);
+
+                columns[0].separator();
+                columns[0].label("CHIP-8 keypad");
+                for row in CHIP8_KEYS {
+                    columns[0].horizontal(|ui| {
+                        for key in row {
+                            let pressed = self.cpu.keypad.keys[key as usize];
+                            let fill = if pressed {
+                                Color32::from_rgb(50, 130, 60)
+                            } else {
+                                ui.style().visuals.widgets.inactive.bg_fill
+                            };
+                            let text =
+                                RichText::new(format!("{key:X}"))
+                                    .monospace()
+                                    .color(if pressed {
+                                        Color32::WHITE
+                                    } else {
+                                        ui.visuals().text_color()
+                                    });
+                            if ui
+                                .add_sized([34.0, 28.0], egui::Button::new(text).fill(fill))
+                                .clicked()
+                            {
+                                self.cpu.keypad.keys[key as usize] = !pressed;
+                            }
+                        }
+                    });
+                }
+                if columns[0].button("Release all keys").clicked() {
+                    self.cpu.keypad.keys = [false; 16];
+                }
+
+                columns[0].separator();
+                render_registers(&mut columns[0], &self.cpu);
+
+                columns[1].heading("Hex Views");
+                columns[1].label(format!("ROM bytes: {}", self.loaded_rom.len()));
+                columns[1].label(RichText::new("Loaded ROM (base 0x200)").strong());
+                render_hex_view(
+                    &mut columns[1],
+                    &self.loaded_rom,
+                    0x200,
+                    None,
+                    "rom_hex",
+                    300.0,
+                );
+
+                columns[1].separator();
+                columns[1]
+                    .label(RichText::new(format!("Memory (PC -> 0x{:03X})", self.cpu.pc)).strong());
+                render_hex_view(
+                    &mut columns[1],
+                    &self.cpu.memory,
+                    0x000,
+                    Some(self.cpu.pc as usize),
+                    "memory_hex",
+                    500.0,
+                );
+            });
+        });
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    env_logger::init();
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 300.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1500.0, 900.0]),
         ..Default::default()
     };
 
     eframe::run_native(
         "CHIP-8 Emulator",
         native_options,
-        Box::new(|_cc| {
-            Ok(Box::new(ChipApp { text: "OK".to_string() }))
-        }),
+        Box::new(|_cc| Ok(Box::new(ChipApp::new()))),
     )
-}
-
-#[derive(Default)]
-struct ChipApp {
-    text: String,
-}
-
-impl eframe::App for ChipApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-
-            ui.heading("Press/Hold/Release example. Press A to test.");
-            if ui.button("Clear").clicked() {
-                self.text.clear();
-            }
-            ScrollArea::vertical()
-                .auto_shrink(false)
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    ui.label(&self.text);
-                });
-
-            if ui.input(|i| i.key_pressed(Key::A)) {
-                self.text.push_str("\nPressed");
-            }
-            if ui.input(|i| i.key_down(Key::A)) {
-                self.text.push_str("\nHeld");
-                // ui.request_repaint(); // make sure we note the holding.
-            }
-            if ui.input(|i| i.key_released(Key::A)) {
-                self.text.push_str("\nReleased");
-            }
-
-
-            // ui.heading("test");
-            // ui.label("test");
-            //
-            // if ui.button("close").clicked() {
-            //     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            // }
-        });
-    }
 }
