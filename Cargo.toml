@@ -2,10 +2,15 @@
 name = "rusty-chips"
 version = "0.0.1"
 authors = ["Max Vasiliev <max@vasiliev.me>"]
+edition = "2024"
 
 [dependencies]
 itertools-num = "0.1.1"
 rand = "0.4"
+eframe = "0.33.3"
+egui = "0.33.3"
+env_logger = { version = "0.11.8", features = ["auto-color", "humantime"] }
+
 
 [features]
 default = []

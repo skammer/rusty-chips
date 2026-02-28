@@ -9,6 +9,9 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 
+use eframe::egui;
+use egui::{Key, ScrollArea};
+
 pub fn print_binary(bytes: &Vec<u8>)
 {
     for x in bytes.iter() {
@@ -236,7 +239,7 @@ impl Cpu {
         [0xF, x, 0x3, 0x3] => self.ld_b(x),
         [0xF, x, 0x5, 0x5] => self.ld_i_v(x),
         [0xF, x, 0x6, 0x5] => self.ld_v_i(x),
-        _ => println!("Unimplemented opcode: {}", opcode)
+        _ => println!("Unimplemented opcode: {:x}", opcode)
       }
     }
 
@@ -249,12 +252,14 @@ impl Cpu {
     // This instruction is only used on the old computers on which Chip-8 was originally
     // implemented. It is ignored by modern interpreters.
     fn sys(&mut self) {
+        println!("SYS");
         self.pc += 2;
     }
 
     // 00E0 - CLS
     // Clear the display.
     fn cls(&mut self) {
+        println!("ClS");
         self.display.clear();
         self.pc += 2;
     }
@@ -265,9 +270,9 @@ impl Cpu {
     // subtracts 1 from the stack pointer.
     fn ret(&mut self) {
         self.pc = *self.stack.get(self.sp as usize).unwrap();
-        if self.sp > 0 {
-            self.sp -= 1;
-        }
+        self.sp = self.sp.saturating_sub(1);
+        println!("RET");
+        self.pc += 2;
     }
 
     // 1nnn - JP addr
@@ -275,6 +280,8 @@ impl Cpu {
     // The interpreter sets the program counter to nnn.
     fn jp(&mut self, nnn: u16) {
         self.pc = nnn;
+        println!("JP {nnn}");
+        self.pc += 2;
     }
 
     // 2nnn - CALL addr
@@ -282,9 +289,11 @@ impl Cpu {
     // The interpreter increments the stack pointer, then puts the current PC on the top of the
     // stack. The PC is then set to nnn.
     fn call(&mut self, nnn: u16) {
-        self.sp += 1;
+        println!("CALL {nnn}");
+        self.sp = self.sp.wrapping_add(1);
         self.stack[self.sp as usize] = self.pc;
         self.pc = nnn;
+        self.pc += 4;
     }
 
     // 3xkk - SE Vx, byte
@@ -292,6 +301,7 @@ impl Cpu {
     // The interpreter compares register Vx to kk, and if they are equal, increments the program
     // counter by 2.
     fn se(&mut self, x: u8, kk: u16) {
+        println!("SE {x} {kk}");
         if self.v[x as usize] as u16 == kk  {
             self.pc += 4;
         } else {
@@ -304,6 +314,7 @@ impl Cpu {
     // The interpreter compares register Vx to kk, and if they are not equal, increments the
     // program counter by 2.
     fn sen(&mut self, x: u8, kk: u16) {
+        println!("SEN {x} {kk}");
         if self.v[x as usize] as u16 != kk  {
             self.pc += 4;
         } else {
@@ -316,6 +327,7 @@ impl Cpu {
     // The interpreter compares register Vx to register Vy, and if they are equal, increments the
     // program counter by 2.
     fn sexy(&mut self, x: u8, y: u8) {
+        println!("SEXY {x} {y}");
         if self.v[x as usize] == self.v[y as usize] {
             self.pc += 4;
         } else {
@@ -327,6 +339,7 @@ impl Cpu {
     // Set Vx = kk.
     // The interpreter puts the value kk into register Vx.
     fn ldxkk(&mut self, x: u8, kk: u16) {
+        println!("LD {x} {kk}");
         self.v[x as usize] = kk as u8;
         self.pc += 2;
     }
@@ -335,7 +348,10 @@ impl Cpu {
     // Set Vx = Vx + kk.
     // Adds the value kk to the value of register Vx, then stores the result in Vx.
     fn addxkk(&mut self, x: u8, kk: u16) {
-        self.v[x as usize] += kk as u8;
+        println!("ADD {x} {kk}");
+        let mut vx = self.v[x as usize];
+        vx = vx.wrapping_add(kk as u8);
+        self.v[x as usize] = vx;
         self.pc += 2;
     }
 
@@ -343,6 +359,7 @@ impl Cpu {
     // Set Vx = Vy.
     // Stores the value of register Vy in register Vx.
     fn ldxy(&mut self, x: u8, y: u8) {
+        println!("LD {x} {y}");
         self.v[x as usize] = self.v[y as usize];
         self.pc += 2;
     }
@@ -351,6 +368,7 @@ impl Cpu {
     // Set Vx = Vx OR Vy.
     // Performs a bitwise OR on the values of Vx and Vy, then stores the result in Vx.
     fn or(&mut self, x: u8, y: u8) {
+        println!("OR {x} {y}");
         let res: u8 = self.v[x as usize] | self.v[y as usize];
         self.v[x as usize] = res;
         self.pc += 2;
@@ -380,11 +398,16 @@ impl Cpu {
     // > 255,) VF is set to 1, otherwise 0. Only the lowest 8 bits of the result are kept, and
     // stored in Vx.
     fn add(&mut self, x: u8, y: u8) {
-        let vx = self.v[x as usize];
-        let res: u8 = vx.wrapping_add(self.v[y as usize]);
-        let carry: u8 = if res >= vx { 0 } else { 1 };
+        let vx = self.v[x as usize] as u16;
+        let vy = self.v[y as usize] as u16;
+        let res: u16 = vx + vy;
+        let carry: u8 = if res > 255 { 1 } else { 0 };
 
-        self.v[x as usize] = res;
+        // let a = (res & 0x00FF) as u8;
+
+        // println!("{vx} {vy} {res} {a} {carry}");
+
+        self.v[x as usize] = (res & 0x00FF) as u8;
         self.vf = carry;
         self.pc += 2;
     }
@@ -410,9 +433,12 @@ impl Cpu {
     // divided by 2.
     fn shr(&mut self, x: u8, _y: u8) {
         let vx = self.v[x as usize];
-        let carry: u8 = vx >> 3;
+        let carry: u8 = vx & 0x1;
+        let res = vx >> 1;
 
-        self.v[x as usize] = vx >> 1;
+        // println!("8xy6 {vx} {res} {carry}");
+
+        self.v[x as usize] = res;
         self.vf = carry;
         self.pc += 2;
     }
@@ -427,6 +453,8 @@ impl Cpu {
         let res: u8 = vy.wrapping_sub(vx);
         let carry: u8 = if vy > vx { 1 } else { 0 };
 
+        // println!("8xy7 {vx} {vy} {res} {carry}");
+
         self.v[x as usize] = res;
         self.vf = carry;
         self.pc += 2;
@@ -438,9 +466,12 @@ impl Cpu {
     // 0. Then Vx is multiplied by 2.
     fn shl(&mut self, x: u8, _y: u8) {
         let vx = self.v[x as usize];
-        let carry: u8 = vx >> 3;
+        let carry: u8 = vx & 0x80;
+        let res = vx << 1;
 
-        self.v[x as usize] = vx << 1;
+        println!("8xyE {vx} {res} {carry}");
+
+        self.v[x as usize] = res;
         self.vf = carry;
         self.pc += 2;
     }
@@ -646,7 +677,7 @@ impl Cpu {
     // The interpreter copies the values of registers V0 through Vx into memory, starting at the address in I.
     fn ld_i_v(&mut self, x: u8) {
 
-        for idx in 0..x {
+        for idx in 0..=x {
             let v = self.v[idx as usize];
             self.memory[(self.i + idx as u16) as usize] = v;
         }
@@ -669,9 +700,6 @@ impl Cpu {
         self.pc += 2;
     }
 
-
-
-
     // Super Chip-48 Instructions
     // 00Cn - SCD nibble
     // 00FB - SCR
@@ -691,7 +719,10 @@ fn main() {
     println!("Game");
 
     // let game: Vec<u8> = read_game("./games/PONG");
-    let game: Vec<u8> = read_game("./games/1-chip8-logo.ch8");
+    // let game: Vec<u8> = read_game("./games/1-chip8-logo.ch8");
+    // let game: Vec<u8> = read_game("./games/2-ibm-logo.ch8");
+    // let game: Vec<u8> = read_game("./games/3-corax+.ch8");
+    let game: Vec<u8> = read_game("./games/4-flags.ch8");
 
     println!("Memory");
 
@@ -700,7 +731,7 @@ fn main() {
     // print_binary(&cpu.memory.to_vec());
 
 
-    for i in 0..2000 {
+    for _i in 0..1500 {
         cpu.execute_cycle();
     }
 
@@ -709,4 +740,64 @@ fn main() {
 
     println!("Running CHIP-8 CPU");
     println!("timers running at 60hz");
+}
+
+
+fn main_2() -> eframe::Result<()> {
+    env_logger::init(); // Log to stderr (if you run with `RUST_LOG=debug`).
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([400.0, 300.0]),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "CHIP-8 Emulator",
+        native_options,
+        Box::new(|_cc| {
+            Ok(Box::new(ChipApp { text: "OK".to_string() }))
+        }),
+    )
+}
+
+#[derive(Default)]
+struct ChipApp {
+    text: String,
+}
+
+impl eframe::App for ChipApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+
+            ui.heading("Press/Hold/Release example. Press A to test.");
+            if ui.button("Clear").clicked() {
+                self.text.clear();
+            }
+            ScrollArea::vertical()
+                .auto_shrink(false)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.label(&self.text);
+                });
+
+            if ui.input(|i| i.key_pressed(Key::A)) {
+                self.text.push_str("\nPressed");
+            }
+            if ui.input(|i| i.key_down(Key::A)) {
+                self.text.push_str("\nHeld");
+                // ui.request_repaint(); // make sure we note the holding.
+            }
+            if ui.input(|i| i.key_released(Key::A)) {
+                self.text.push_str("\nReleased");
+            }
+
+
+            // ui.heading("test");
+            // ui.label("test");
+            //
+            // if ui.button("close").clicked() {
+            //     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            // }
+        });
+    }
 }
