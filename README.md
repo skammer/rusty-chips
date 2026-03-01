@@ -14,7 +14,12 @@ http://devernay.free.fr/hacks/chip8/C8TECH10.HTM
 https://tonisagrista.com/blog/2021/chip8-spec/
 https://austinbricker.com/chip8/chip8.pdf
 
+https://chip8.gulrak.net
+
 http://devernay.free.fr/hacks/chip8/schip.txt
 
 https://www.laurencescotford.net/2020/07/19/chip-8-on-the-cosmac-vip-loading-and-saving-variables/
 https://tobiasvl.github.io/blog/write-a-chip-8-emulator/#fx55-and-fx65-store-and-load-memory
+https://cgmathprog.home.blog/2021/05/20/chip-8-and-emulator-overview/
+
+https://github.com/JohnEarnest/Octo

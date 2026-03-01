@@ -837,9 +837,13 @@ fn render_hex_view(
     data: &[u8],
     base_addr: usize,
     highlight_addrs: &[usize],
+    rom_range: Option<(usize, usize)>,
+    fontset_range: (usize, usize),
     id_salt: &'static str,
     max_height: f32,
 ) {
+    let rom_color = Color32::from_rgb(180, 90, 255);
+    let fontset_color = Color32::from_rgb(255, 191, 0);
     ScrollArea::vertical()
         .id_salt(id_salt)
         .max_height(max_height)
@@ -854,7 +858,17 @@ fn render_hex_view(
                     );
                     for (col, byte) in chunk.iter().enumerate() {
                         let addr = row_addr + col;
+                        let is_fontset = addr >= fontset_range.0 && addr < fontset_range.1;
+                        let is_rom = rom_range
+                            .map(|(start, end)| addr >= start && addr < end)
+                            .unwrap_or(false);
+
                         let mut text = RichText::new(format!("{byte:02X}")).monospace();
+                        if is_fontset {
+                            text = text.color(fontset_color);
+                        } else if is_rom {
+                            text = text.color(rom_color);
+                        }
                         if highlight_addrs.contains(&addr) {
                             text = text.background_color(Color32::YELLOW).color(Color32::BLACK);
                         }
@@ -882,62 +896,71 @@ fn render_registers(ui: &mut egui::Ui, cpu: &Cpu) {
                 if *pressed { acc | (1u16 << idx) } else { acc }
             },
         );
-    egui::Grid::new("core_registers_grid")
-        .num_columns(2)
-        .striped(true)
-        .show(ui, |ui| {
-            ui.monospace("PC");
-            ui.monospace(format!("{:03X}", cpu.pc));
-            ui.end_row();
-
-            ui.monospace("OP");
-            ui.monospace(opcode.clone());
-            ui.end_row();
-
-            ui.monospace("I");
-            ui.monospace(format!("{:03X}", cpu.i));
-            ui.end_row();
-
-            ui.monospace("SP");
-            ui.monospace(format!("{:02X}", cpu.sp));
-            ui.end_row();
-
-            ui.monospace("DT");
-            ui.monospace(format!("{:02X}", cpu.dt));
-            ui.end_row();
-
-            ui.monospace("ST");
-            ui.monospace(format!("{:02X}", cpu.st));
-            ui.end_row();
-
-            ui.monospace("VF");
-            ui.monospace(format!("{:02X}", cpu.v[0xf]));
-            ui.end_row();
-
-            ui.monospace("KBD");
-            ui.monospace(format!("{keyboard_mask:04X}"));
-            ui.end_row();
-        });
-
-    ui.add_space(8.0);
-    egui::Grid::new("v_registers_grid")
-        .num_columns(8)
-        .striped(true)
-        .show(ui, |ui| {
-            for idx in 0..16 {
-                ui.monospace(format!("V{idx:X}"));
-                ui.monospace(format!("{:02X}", cpu.v[idx]));
-                if idx % 4 == 3 {
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            egui::Grid::new("core_registers_grid")
+                .num_columns(2)
+                .striped(true)
+                .show(ui, |ui| {
+                    ui.monospace("PC");
+                    ui.monospace(format!("{:03X}", cpu.pc));
                     ui.end_row();
-                }
-            }
+
+                    ui.monospace("OP");
+                    ui.monospace(opcode.clone());
+                    ui.end_row();
+
+                    ui.monospace("I");
+                    ui.monospace(format!("{:03X}", cpu.i));
+                    ui.end_row();
+
+                    ui.monospace("SP");
+                    ui.monospace(format!("{:02X}", cpu.sp));
+                    ui.end_row();
+
+                    ui.monospace("DT");
+                    ui.monospace(format!("{:02X}", cpu.dt));
+                    ui.end_row();
+
+                    ui.monospace("ST");
+                    ui.monospace(format!("{:02X}", cpu.st));
+                    ui.end_row();
+
+                    ui.monospace("VF");
+                    ui.monospace(format!("{:02X}", cpu.v[0xf]));
+                    ui.end_row();
+
+                    ui.monospace("KBD");
+                    ui.monospace(format!("{keyboard_mask:04X}"));
+                    ui.end_row();
+                });
         });
+
+        ui.add_space(16.0);
+
+        ui.vertical(|ui| {
+            ui.label(RichText::new("Vx").strong());
+            egui::Grid::new("v_registers_grid")
+                .num_columns(8)
+                .striped(true)
+                .show(ui, |ui| {
+                    for idx in 0..16 {
+                        ui.monospace(format!("V{idx:X}"));
+                        ui.monospace(format!("{:02X}", cpu.v[idx]));
+                        if idx % 4 == 3 {
+                            ui.end_row();
+                        }
+                    }
+                });
+        });
+    });
 }
 
 #[derive(Clone)]
 struct EmulatorSnapshot {
     cpu: Cpu,
     loaded_rom: Vec<u8>,
+    loaded_game_name: String,
     running: bool,
     error: Option<String>,
 }
@@ -945,6 +968,7 @@ struct EmulatorSnapshot {
 struct EmulatorState {
     cpu: Cpu,
     loaded_rom: Vec<u8>,
+    loaded_game_name: String,
     running: bool,
     error: Option<String>,
 }
@@ -954,15 +978,17 @@ impl EmulatorState {
         EmulatorState {
             cpu: Cpu::new(),
             loaded_rom: Vec::new(),
+            loaded_game_name: "None".to_string(),
             running: false,
             error: None,
         }
     }
 
-    fn load_game(&mut self, rom: Vec<u8>) {
+    fn load_game(&mut self, rom: Vec<u8>, name: String) {
         self.running = false;
         self.cpu = Cpu::new();
         self.loaded_rom = rom;
+        self.loaded_game_name = name;
         self.cpu.load_game(&self.loaded_rom);
         self.error = None;
     }
@@ -990,6 +1016,7 @@ impl EmulatorState {
         EmulatorSnapshot {
             cpu: self.cpu.clone(),
             loaded_rom: self.loaded_rom.clone(),
+            loaded_game_name: self.loaded_game_name.clone(),
             running: self.running,
             error: self.error.clone(),
         }
@@ -1099,6 +1126,7 @@ struct ChipApp {
     jump_steps: usize,
     beep_frequency_hz: u32,
     beep_volume: f32,
+    sticky_keypad_buttons: bool,
 }
 
 impl Drop for ChipApp {
@@ -1138,6 +1166,7 @@ impl ChipApp {
             jump_steps: 100,
             beep_frequency_hz: 440,
             beep_volume: 0.15,
+            sticky_keypad_buttons: false,
         };
 
         if app.games.is_empty() {
@@ -1195,8 +1224,13 @@ impl ChipApp {
 
         match fs::read(&path) {
             Ok(rom) => {
+                let name = self
+                    .games
+                    .get(self.selected_game)
+                    .map(|g| g.name.clone())
+                    .unwrap_or_else(|| path.display().to_string());
                 self.with_emulator_mut(|emulator| {
-                    emulator.load_game(rom);
+                    emulator.load_game(rom, name);
                 });
             }
             Err(err) => {
@@ -1213,6 +1247,9 @@ impl eframe::App for ChipApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(16));
 
+        let dropped_files = ctx.input(|i| i.raw.dropped_files.clone());
+        let hovered_files = ctx.input(|i| i.raw.hovered_files.clone());
+
         let snapshot = self.emulator_snapshot();
         let mut toggle_running = false;
         let mut step_once = false;
@@ -1220,78 +1257,89 @@ impl eframe::App for ChipApp {
         let mut jump_requested = false;
         let mut release_all_keys = false;
         let mut toggled_keys: Vec<u8> = Vec::new();
+        let mut momentary_keys: Vec<(u8, bool)> = Vec::new();
+        let mut clear_keys_for_mode_switch = false;
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.columns(2, |columns| {
                 columns[0].heading("CHIP-8 Debugger");
-                if !self.games.is_empty() {
-                    let mut next_selected = self.selected_game;
-                    egui::ComboBox::from_label("Game")
-                        .selected_text(self.selected_game_name())
-                        .show_ui(&mut columns[0], |ui| {
-                            for (idx, game) in self.games.iter().enumerate() {
-                                ui.selectable_value(&mut next_selected, idx, &game.name);
+                columns[0].horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Game + Execution").strong());
+                        if !self.games.is_empty() {
+                            let mut next_selected = self.selected_game;
+                            egui::ComboBox::from_label("Game")
+                                .selected_text(self.selected_game_name())
+                                .show_ui(ui, |ui| {
+                                    for (idx, game) in self.games.iter().enumerate() {
+                                        ui.selectable_value(&mut next_selected, idx, &game.name);
+                                    }
+                                });
+                            if next_selected != self.selected_game {
+                                self.selected_game = next_selected;
+                                self.reload_selected_game();
+                            }
+                        } else {
+                            ui.label("No game binaries discovered.");
+                        }
+
+                        ui.horizontal(|ui| {
+                            let run_label = if snapshot.running { "Stop" } else { "Start" };
+                            if ui.button(run_label).clicked() {
+                                toggle_running = true;
+                            }
+                            if ui.button("Step").clicked() {
+                                step_once = true;
+                            }
+                            if ui.button("Reset").clicked() {
+                                reset = true;
                             }
                         });
-                    if next_selected != self.selected_game {
-                        self.selected_game = next_selected;
-                        self.reload_selected_game();
-                    }
-                } else {
-                    columns[0].label("No game binaries discovered.");
-                }
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut self.jump_steps)
+                                    .range(1..=500_000)
+                                    .speed(1.0)
+                                    .prefix("N="),
+                            );
+                            if ui.button("Jump N").clicked() {
+                                jump_requested = true;
+                            }
+                        });
 
-                columns[0].horizontal(|ui| {
-                    let run_label = if snapshot.running { "Stop" } else { "Start" };
-                    if ui.button(run_label).clicked() {
-                        toggle_running = true;
-                    }
-                    if ui.button("Step").clicked() {
-                        step_once = true;
-                    }
-                    if ui.button("Reset").clicked() {
-                        reset = true;
-                    }
-                });
-                columns[0].label(format!("Run rate: {RUN_HZ} Hz"));
-                columns[0].label(format!("Timer tick: {TICK_HZ} Hz"));
-                columns[0].separator();
-                columns[0].label("Audio");
-                columns[0].horizontal(|ui| {
-                    ui.label("Tone");
-                    ui.add(
-                        egui::DragValue::new(&mut self.beep_frequency_hz)
-                            .range(BEEP_FREQ_MIN_HZ..=BEEP_FREQ_MAX_HZ)
-                            .speed(1.0)
-                            .suffix(" Hz"),
-                    );
-                });
-                columns[0]
-                    .add(egui::Slider::new(&mut self.beep_volume, 0.0..=1.0).text("Beep volume"));
-                if let Some(audio_error) = &self.audio_error {
-                    columns[0].colored_label(Color32::LIGHT_RED, audio_error);
-                }
+                        ui.label(format!("Run rate: {RUN_HZ} Hz"));
+                        ui.label(format!("Timer tick: {TICK_HZ} Hz"));
+                        ui.label(format!(
+                            "Execution: {}",
+                            if snapshot.running {
+                                "Running"
+                            } else {
+                                "Stopped"
+                            }
+                        ));
+                    });
 
-                columns[0].horizontal(|ui| {
-                    ui.add(
-                        egui::DragValue::new(&mut self.jump_steps)
-                            .range(1..=500_000)
-                            .speed(1.0)
-                            .prefix("N="),
-                    );
-                    if ui.button("Jump N").clicked() {
-                        jump_requested = true;
-                    }
-                });
+                    ui.add_space(16.0);
 
-                columns[0].label(format!(
-                    "Execution: {}",
-                    if snapshot.running {
-                        "Running"
-                    } else {
-                        "Stopped"
-                    }
-                ));
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Audio").strong());
+                        ui.horizontal(|ui| {
+                            ui.label("Tone");
+                            ui.add(
+                                egui::DragValue::new(&mut self.beep_frequency_hz)
+                                    .range(BEEP_FREQ_MIN_HZ..=BEEP_FREQ_MAX_HZ)
+                                    .speed(1.0)
+                                    .suffix(" Hz"),
+                            );
+                        });
+                        ui.add(
+                            egui::Slider::new(&mut self.beep_volume, 0.0..=1.0).text("Beep volume"),
+                        );
+                        if let Some(audio_error) = &self.audio_error {
+                            ui.colored_label(Color32::LIGHT_RED, audio_error);
+                        }
+                    });
+                });
 
                 if let Some(error) = &snapshot.error {
                     columns[0].colored_label(Color32::LIGHT_RED, error);
@@ -1303,6 +1351,13 @@ impl eframe::App for ChipApp {
 
                 columns[0].separator();
                 columns[0].label("CHIP-8 keypad");
+                if columns[0]
+                    .checkbox(&mut self.sticky_keypad_buttons, "Sticky keypad buttons")
+                    .changed()
+                    && !self.sticky_keypad_buttons
+                {
+                    clear_keys_for_mode_switch = true;
+                }
                 for row in CHIP8_KEYS {
                     columns[0].horizontal(|ui| {
                         for key in row {
@@ -1320,11 +1375,15 @@ impl eframe::App for ChipApp {
                                     } else {
                                         ui.visuals().text_color()
                                     });
-                            if ui
-                                .add_sized([34.0, 28.0], egui::Button::new(text).fill(fill))
-                                .clicked()
-                            {
-                                toggled_keys.push(key);
+                            let response =
+                                ui.add_sized([34.0, 28.0], egui::Button::new(text).fill(fill));
+                            if self.sticky_keypad_buttons {
+                                if response.clicked() {
+                                    toggled_keys.push(key);
+                                }
+                            } else {
+                                let down = response.is_pointer_button_down_on();
+                                momentary_keys.push((key, down));
                             }
                         }
                     });
@@ -1337,33 +1396,93 @@ impl eframe::App for ChipApp {
                 render_registers(&mut columns[0], &snapshot.cpu);
 
                 columns[1].heading("Hex Views");
+                columns[1].label(format!("Loaded game: {}", snapshot.loaded_game_name));
                 columns[1].label(format!("ROM bytes: {}", snapshot.loaded_rom.len()));
-                columns[1].label(RichText::new("Loaded ROM (base 0x200)").strong());
-                render_hex_view(
-                    &mut columns[1],
-                    &snapshot.loaded_rom,
-                    0x200,
-                    &[],
-                    "rom_hex",
-                    300.0,
-                );
-
-                columns[1].separator();
+                columns[1].label("Legend: ROM bytes are purple, font bytes are amber");
                 columns[1].label(
                     RichText::new(format!("Memory (PC -> 0x{:03X})", snapshot.cpu.pc)).strong(),
                 );
                 let pc = snapshot.cpu.pc as usize;
                 let opcode_bytes = [pc, pc.saturating_add(1)];
+                let rom_start = 0x200usize;
+                let rom_end = rom_start + snapshot.loaded_rom.len();
                 render_hex_view(
                     &mut columns[1],
                     &snapshot.cpu.memory,
                     0x000,
                     &opcode_bytes,
+                    Some((rom_start, rom_end)),
+                    (0, FONTSET.len()),
                     "memory_hex",
-                    500.0,
+                    840.0,
                 );
             });
         });
+
+        if !hovered_files.is_empty() {
+            egui::Window::new("Drop ROM")
+                .anchor(egui::Align2::CENTER_TOP, [0.0, 20.0])
+                .resizable(false)
+                .collapsible(false)
+                .title_bar(false)
+                .show(ctx, |ui| {
+                    ui.strong("Drop game file to load");
+                });
+        }
+
+        if !dropped_files.is_empty() {
+            let mut dropped_rom: Option<(Vec<u8>, String)> = None;
+            let mut dropped_error: Option<String> = None;
+
+            for file in dropped_files {
+                if let Some(path) = file.path {
+                    match fs::read(&path) {
+                        Ok(bytes) => {
+                            let name = path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(ToString::to_string)
+                                .unwrap_or_else(|| path.display().to_string());
+                            dropped_rom = Some((bytes, name));
+                            break;
+                        }
+                        Err(err) => {
+                            dropped_error = Some(format!(
+                                "Failed to read dropped file {}: {err}",
+                                path.display()
+                            ));
+                        }
+                    }
+                    continue;
+                }
+
+                if let Some(bytes) = file.bytes {
+                    if bytes.is_empty() {
+                        dropped_error = Some("Dropped file is empty".to_string());
+                        continue;
+                    }
+                    let name = if file.name.is_empty() {
+                        "Dropped ROM".to_string()
+                    } else {
+                        file.name
+                    };
+                    dropped_rom = Some((bytes.as_ref().to_vec(), name));
+                    break;
+                }
+
+                dropped_error = Some("Dropped file has no readable path or bytes".to_string());
+            }
+
+            if let Some((rom, name)) = dropped_rom {
+                self.with_emulator_mut(|emulator| {
+                    emulator.load_game(rom, name);
+                });
+            } else if let Some(err) = dropped_error {
+                self.with_emulator_mut(|emulator| {
+                    emulator.error = Some(err);
+                });
+            }
+        }
 
         if toggle_running
             || step_once
@@ -1371,6 +1490,8 @@ impl eframe::App for ChipApp {
             || jump_requested
             || release_all_keys
             || !toggled_keys.is_empty()
+            || !momentary_keys.is_empty()
+            || clear_keys_for_mode_switch
         {
             let jump_steps = self.jump_steps;
             self.with_emulator_mut(|emulator| {
@@ -1391,9 +1512,16 @@ impl eframe::App for ChipApp {
                 if release_all_keys {
                     emulator.cpu.keypad.keys = [false; 16];
                 }
+                if clear_keys_for_mode_switch {
+                    emulator.cpu.keypad.keys = [false; 16];
+                }
                 for key in toggled_keys {
                     let idx = key as usize;
                     emulator.cpu.keypad.keys[idx] = !emulator.cpu.keypad.keys[idx];
+                }
+                for (key, down) in momentary_keys {
+                    let idx = key as usize;
+                    emulator.cpu.keypad.keys[idx] = down;
                 }
             });
         }
