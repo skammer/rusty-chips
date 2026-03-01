@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use egui::{Color32, RichText, ScrollArea};
+use rodio::source::SineWave;
+use rodio::{OutputStream, OutputStreamBuilder, Sink, Source};
 
 pub fn print_binary(bytes: &Vec<u8>) {
     for x in bytes.iter() {
@@ -194,9 +196,8 @@ impl Cpu {
         }
 
         if self.st > 0 {
-            if self.st == 1 {
-                // Beep the beeper
-            }
+            // Beep the beeper
+            if self.st == 1 {}
 
             self.st -= 1;
         }
@@ -538,7 +539,6 @@ impl Cpu {
     // is outside the coordinates of the display, it wraps around to the opposite side of the screen.
     // See instruction 8xy3 for more information on XOR
     fn drw(&mut self, x: u8, y: u8, n: u8) {
-
         // running at timer clock speed is apparently too slow.
         // running at about 2x the timer clock speed seems to be ok
         if self.tick_divider_counter < (TICK_DIVISOR / 2) {
@@ -583,9 +583,6 @@ impl Cpu {
             // Loop until we get the tick (blanking interval)
             self.pc -= 2;
         }
-
-
-
     }
 
     // Ex9E - SKP Vx
@@ -631,7 +628,6 @@ impl Cpu {
         let mut released = false;
 
         for (k, v) in self.keypad.keys.iter().enumerate() {
-
             if self.key_detection_index == 0 {
                 if *v {
                     self.key_detection_index = k;
@@ -765,6 +761,8 @@ const RUN_HZ: u32 = 540;
 const TICK_HZ: u32 = 60;
 const TICK_DIVISOR: u32 = RUN_HZ / TICK_HZ;
 const MAX_STEPS_PER_FRAME: usize = 4096;
+const BEEP_FREQ_MIN_HZ: u32 = 80;
+const BEEP_FREQ_MAX_HZ: u32 = 2000;
 
 fn is_game_file(path: &Path) -> bool {
     if !path.is_file() {
@@ -1034,17 +1032,80 @@ fn spawn_emulator_thread(
     })
 }
 
+struct Beeper {
+    stream: OutputStream,
+    sink: Option<Sink>,
+    current_frequency_hz: u32,
+    current_volume: f32,
+}
+
+impl Beeper {
+    fn new() -> Result<Beeper, String> {
+        let mut stream = OutputStreamBuilder::open_default_stream()
+            .map_err(|err| format!("Audio init failed: {err}"))?;
+        stream.log_on_drop(false);
+        Ok(Beeper {
+            stream,
+            sink: None,
+            current_frequency_hz: 0,
+            current_volume: 0.0,
+        })
+    }
+
+    fn stop(&mut self) {
+        if let Some(sink) = self.sink.take() {
+            sink.stop();
+        }
+        self.current_frequency_hz = 0;
+        self.current_volume = 0.0;
+    }
+
+    fn sync(&mut self, active: bool, frequency_hz: u32, volume: f32) -> Result<(), String> {
+        if !active {
+            self.stop();
+            return Ok(());
+        }
+
+        let clamped_frequency = frequency_hz.clamp(BEEP_FREQ_MIN_HZ, BEEP_FREQ_MAX_HZ);
+        let clamped_volume = volume.clamp(0.0, 1.0);
+        let config_changed = self.current_frequency_hz != clamped_frequency
+            || (self.current_volume - clamped_volume).abs() > f32::EPSILON;
+
+        if self.sink.is_none() || config_changed {
+            self.stop();
+            let sink = Sink::connect_new(self.stream.mixer());
+            let tone = SineWave::new(clamped_frequency as f32)
+                .amplify(clamped_volume)
+                .repeat_infinite();
+            sink.append(tone);
+            sink.play();
+            self.current_frequency_hz = clamped_frequency;
+            self.current_volume = clamped_volume;
+            self.sink = Some(sink);
+        }
+
+        Ok(())
+    }
+}
+
 struct ChipApp {
     emulator: Arc<Mutex<EmulatorState>>,
     worker_stop: Arc<AtomicBool>,
     worker_handle: Option<JoinHandle<()>>,
+    beeper: Option<Beeper>,
+    audio_error: Option<String>,
     games: Vec<GameEntry>,
     selected_game: usize,
     jump_steps: usize,
+    beep_frequency_hz: u32,
+    beep_volume: f32,
 }
 
 impl Drop for ChipApp {
     fn drop(&mut self) {
+        if let Some(beeper) = &mut self.beeper {
+            beeper.stop();
+        }
         self.worker_stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.worker_handle.take() {
             let _ = handle.join();
@@ -1061,14 +1122,22 @@ impl ChipApp {
             Arc::clone(&emulator),
             Arc::clone(&worker_stop),
         ));
+        let (beeper, audio_error) = match Beeper::new() {
+            Ok(beeper) => (Some(beeper), None),
+            Err(err) => (None, Some(err)),
+        };
 
         let mut app = ChipApp {
             emulator,
             worker_stop,
             worker_handle,
+            beeper,
+            audio_error,
             games,
             selected_game: 0,
             jump_steps: 100,
+            beep_frequency_hz: 440,
+            beep_volume: 0.15,
         };
 
         if app.games.is_empty() {
@@ -1080,6 +1149,16 @@ impl ChipApp {
         }
 
         app
+    }
+
+    fn sync_audio_for_st(&mut self, st: u8) {
+        let wants_beep = st > 0;
+        if let Some(beeper) = &mut self.beeper {
+            if let Err(err) = beeper.sync(wants_beep, self.beep_frequency_hz, self.beep_volume) {
+                self.audio_error = Some(err);
+                self.beeper = None;
+            }
+        }
     }
 
     fn with_emulator_mut<R>(&self, f: impl FnOnce(&mut EmulatorState) -> R) -> R {
@@ -1176,6 +1255,22 @@ impl eframe::App for ChipApp {
                 });
                 columns[0].label(format!("Run rate: {RUN_HZ} Hz"));
                 columns[0].label(format!("Timer tick: {TICK_HZ} Hz"));
+                columns[0].separator();
+                columns[0].label("Audio");
+                columns[0].horizontal(|ui| {
+                    ui.label("Tone");
+                    ui.add(
+                        egui::DragValue::new(&mut self.beep_frequency_hz)
+                            .range(BEEP_FREQ_MIN_HZ..=BEEP_FREQ_MAX_HZ)
+                            .speed(1.0)
+                            .suffix(" Hz"),
+                    );
+                });
+                columns[0]
+                    .add(egui::Slider::new(&mut self.beep_volume, 0.0..=1.0).text("Beep volume"));
+                if let Some(audio_error) = &self.audio_error {
+                    columns[0].colored_label(Color32::LIGHT_RED, audio_error);
+                }
 
                 columns[0].horizontal(|ui| {
                     ui.add(
@@ -1302,6 +1397,9 @@ impl eframe::App for ChipApp {
                 }
             });
         }
+
+        let st = self.emulator_snapshot().cpu.st;
+        self.sync_audio_for_st(st);
     }
 }
 

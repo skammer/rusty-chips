@@ -10,6 +10,7 @@ rand = "0.4"
 eframe = "0.33.3"
 egui = "0.33.3"
 env_logger = { version = "0.11.8", features = ["auto-color", "humantime"] }
+rodio = "0.21"
 
 
 [features]
